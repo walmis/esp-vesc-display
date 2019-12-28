@@ -18,7 +18,6 @@
 #include <task.h>
 #include <semphr.h>
 #include <queue.h>
-#include "platform.h"
 
 extern char _binary_image_espfs_start[] ;
 extern void platform_set_baud(uint32_t);
@@ -38,6 +37,14 @@ static void on_term_connect(Websock *ws) {
   ws->recvCb = on_term_recv;
 
   //cgiWebsocketSend(ws, "Hi, Websocket!", 14, WEBSOCK_FLAG_NONE);
+}
+static void on_debug_recv(Websock *ws, char *data, int len, int flags) {
+
+}
+static void on_debug_connect(Websock *ws) {
+  ws->recvCb = on_debug_recv;
+
+  //cgiWebsocketSend(&instance.httpdInstance, ws, "Debug connected\r\n", 17, WEBSOCK_FLAG_NONE);
 }
 
 CgiStatus cgi_baud(HttpdConnData *connData) {
@@ -93,13 +100,7 @@ CgiStatus cgi_status(HttpdConnData *connData) {
 
   len = snprintf(buff, sizeof(buff), "{\"free_heap\": %u,\n"
                                       "\"baud_rate\": %d,\n"
-                                      "\"uart_overruns\": %d\n"
-                                      "\"uart_errors\": %d\n"
-                                      "\"uart_rx_full_cnt\": %d\n"
-                                      "\"uart_rx_count\": %d\n"
-                                      "\"uart_tx_count\": %d\n"
-                                      "\"tasks\": [\n", esp_get_free_heap_size(), baud, uart_overrun_cnt, uart_errors,
-                                      uart_queue_full_cnt, uart_rx_count, uart_tx_count);
+                                      "\"tasks\": [\n", esp_get_free_heap_size(), baud);
 
 
   httpdStartResponse(connData, 200);
@@ -112,16 +113,19 @@ CgiStatus cgi_status(HttpdConnData *connData) {
 
   int uxArraySize = uxTaskGetNumberOfTasks();
   TaskStatus_t* pxTaskStatusArray = malloc( uxArraySize * sizeof( TaskStatus_t ) );
-
+  uint32_t total_runtime;
   if( pxTaskStatusArray != NULL )
   {
     /* Generate the (binary) data. */
-    uxArraySize = uxTaskGetSystemState( pxTaskStatusArray, uxArraySize, NULL );
+    uxArraySize = uxTaskGetSystemState( pxTaskStatusArray, uxArraySize, &total_runtime );
+    total_runtime /= 100;
+    if(total_runtime == 0) total_runtime = 1;
+
     for(int i = 0; i < uxArraySize; i++) {
       TaskStatus_t* tsk = &pxTaskStatusArray[i];
 
-      len = snprintf(buff, sizeof(buff), "\t{\"id\": %lu, \"name\": %s, \"prio\": %lu, \"state\": %d, \"stack_hwm\": %u },\n",
-          tsk->xTaskNumber, tsk->pcTaskName, tsk->uxCurrentPriority, tsk->eCurrentState, tsk->usStackHighWaterMark);
+      len = snprintf(buff, sizeof(buff), "\t{\"id\": %u, \"name\": %s, \"prio\": %u, \"state\": %d, \"stack_hwm\": %u, \"cpu\": \"%u%%\" },\n",
+          tsk->xTaskNumber, tsk->pcTaskName, tsk->uxCurrentPriority, tsk->eCurrentState, tsk->usStackHighWaterMark, tsk->ulRunTimeCounter / total_runtime);
 
 
       httpdSend(connData, buff, len);
@@ -176,6 +180,7 @@ HttpdBuiltInUrl builtInUrls[]={
   {"/status", cgi_status, NULL, 0},
 //
   {"/terminal", cgiWebsocket, (const void*)on_term_connect, 0},
+  {"/debugws", cgiWebsocket, (const void*)on_debug_connect, 0},
 //  {"/websocket/echo.cgi", cgiWebsocket, myEchoWebsocketConnect},
 //
 //  {"/test", cgiRedirect, "/test/index.html"},
@@ -188,6 +193,20 @@ HttpdBuiltInUrl builtInUrls[]={
 
 void http_term_broadcast_data(uint8_t* data, size_t len) {
   cgiWebsockBroadcast(&instance.httpdInstance, "/terminal", (char*)data, len, WEBSOCK_FLAG_NONE);
+}
+
+
+
+void http_debug_putc(char c, int flush) {
+	static uint8_t buf[256];
+	static int bufsize = 0;
+
+	buf[bufsize++] = c;
+	if (flush || (bufsize == sizeof(buf))) {
+		cgiWebsockBroadcast(&instance.httpdInstance, "/debugws", (char*)buf, bufsize, WEBSOCK_FLAG_NONE);
+
+		bufsize = 0;
+	}
 }
 
 

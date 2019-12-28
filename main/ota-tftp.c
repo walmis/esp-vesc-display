@@ -78,9 +78,9 @@ const esp_partition_t *running_part;
 
 #define TAG "ota-tftp"
 
-void ota_tftp_init_server(int listen_port)
+void ota_tftp_init_server(int listen_port, int priority)
 {
-    xTaskCreate(tftp_task, "tftpOTATask", 1500, (void *)listen_port, 2, NULL);
+    xTaskCreate(tftp_task, "tftpOTATask", 1500, (void *)listen_port, priority, NULL);
 }
 
 static int ota_tftp_init() {
@@ -386,7 +386,7 @@ static err_t tftp_receive_data(struct netconn *nc, size_t *received_len, ip_addr
                 chunk_len -= 4; /* assuming this netbuf chunk is at least 4 bytes! */
                 first_chunk = false;
             }
-
+            ESP_LOGI(__func__, "block %d", block);
 			err = esp_ota_write(update_handle, chunk, chunk_len);
 			if (err != ESP_OK) {
 				ESP_LOGE(TAG, "Error: esp_ota_write failed! err=0x%x", err);

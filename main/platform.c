@@ -17,17 +17,6 @@
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
-#include "general.h"
-#include "gdb_if.h"
-#include "version.h"
-
-#include "gdb_packet.h"
-#include "gdb_main.h"
-#include "target.h"
-#include "exception.h"
-#include "gdb_packet.h"
-#include "morse.h"
-#include "platform.h"
 
 #include <assert.h>
 #include <sys/time.h>
@@ -57,7 +46,20 @@
 #include "driver/gpio.h"
 #include "esp8266/uart_register.h"
 
+#include <lwip/sockets.h>
+
 #include "ota-tftp.h"
+
+#include "vesc/packet.h"
+#include "vesc/datatypes.h"
+#include "vesc/confgenerator.h"
+#include "vesc/buffer.h"
+#include "mcdata.h"
+#include <errno.h>
+#include <string.h>
+#include <math.h>
+
+#include "display.h"
 
 #define ACCESS_POINT_MODE
 #define AP_SSID	 "blackmagic"
@@ -65,53 +67,7 @@
 
 nvs_handle h_nvs_conf;
 
-uint32_t uart_overrun_cnt;
-uint32_t uart_errors;
-uint32_t uart_queue_full_cnt;
-uint32_t uart_rx_count;
-uint32_t uart_tx_count;
-
-static struct netconn *uart_client_sock;
-static struct netconn *uart_serv_sock;
-static int uart_sockerr;
-static xQueueHandle event_queue;
-static int client_sock_pending_bytes;
-static int clients_pending;
-
-//#define __IOMUX(x) IOMUX_GPIO ## x ##_FUNC_GPIO
-//#define _IOMUX(x)  __IOMUX(x)
-
-void platform_init() {
-#ifdef USE_GPIO2_UART
-  PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO2_U, FUNC_UART1_TXD_BK);
-#else
-  PIN_FUNC_SELECT(PERIPHS_IO_MUX_GPIO2_U, FUNC_GPIO2);
-#endif
-
-  //gpio_set_iomux_function(SWDIO_PIN, _IOMUX(SWDIO_PIN));
-  //gpio_set_iomux_function(SWCLK_PIN, _IOMUX(SWCLK_PIN));
-
-  gpio_clear(_, SWCLK_PIN);
-  gpio_clear(_, SWDIO_PIN);
-
-
-  gpio_enable(SWCLK_PIN, GPIO_OUTPUT);
-  gpio_enable(SWDIO_PIN, GPIO_OUTPUT);
-
-  assert(gdb_if_init() == 0);
-}
-
-void platform_buffer_flush(void) {
-  ;
-}
-
-void platform_srst_set_val(bool assert) {
-  (void) assert;
-}
-
-bool platform_srst_get_val(void) {
-  return false;
-}
+uint32_t t_last_packet;
 
 const char*
 platform_target_voltage(void) {
@@ -139,144 +95,42 @@ int platform_hwversion(void) {
 #define EV_NETNEWCONN 0xFE
 #define EV_NETERR 0xFD
 
-void netconn_serv_cb(struct netconn *nc, enum netconn_evt evt, u16_t len) {
-  DEBUG("evt %d len %d\n", evt, len);
 
-  if (evt == NETCONN_EVT_RCVPLUS)
-  {
-    clients_pending++;
-    uart_event_t evt;
-    evt.type = EV_NETNEWCONN;
-    evt.size = len;
-    xQueueSend(event_queue, (void*)&evt, 0);
 
-  }
-  if (evt == NETCONN_EVT_RCVMINUS)
-  {
-    clients_pending--;
-  }
+xQueueHandle dbg_queue;
+
+void dbg_task(void *parameters) {
+	dbg_queue = xQueueCreate(1024, 1);
+	struct netconn* nc = netconn_new(NETCONN_UDP);
+	ip_addr_t ip;
+	IP_ADDR4(&ip, 192, 168, 4, 255);
+
+	while(1) {
+
+		char tmp;
+		if(xQueuePeek(dbg_queue, &tmp, 10)) {
+			struct netbuf* nb = netbuf_new();
+
+			int waiting = uxQueueMessagesWaiting(dbg_queue);
+			char* mem = netbuf_alloc(nb, waiting);
+
+			while(waiting--) {
+				xQueueReceive(dbg_queue, mem, 0);
+				http_debug_putc(*mem, *mem=='\n' ? 1 : 0);
+				mem++;
+			}
+			netconn_sendto(nc, nb, &ip, 6666);
+
+			netbuf_delete(nb);
+		}
+
+	}
 }
 
-void netconn_cb(struct netconn *nc, enum netconn_evt evt, u16_t len) {
-  //printf("evt %d len %d\n", evt, len);
-
-  if (evt == NETCONN_EVT_RCVPLUS) {
-    client_sock_pending_bytes += len;
-    if (len == 0) {
-      uart_sockerr = 1;
-      client_sock_pending_bytes = 0;
-    }
-
-    uart_event_t evt;
-    evt.type = EV_NETNEWDATA;
-    evt.size = len;
-    xQueueSend(event_queue, (void*)&evt, 0);
-
-  } else if (evt == NETCONN_EVT_RCVMINUS) {
-    client_sock_pending_bytes -= len;
-  }
-
-  else if (evt == NETCONN_EVT_ERROR) {
-    DEBUG("NETCONN_EVT_ERROR\n");
-
-    uart_sockerr = 1;
-    client_sock_pending_bytes = 0;
-    uart_event_t evt;
-    evt.type = EV_NETERR;
-    evt.size = 0;
-    xQueueSend(event_queue, (void*)&evt, 0);
-  }
-}
-
-void uart_rx_task(void *parameters) {
-  static uint8_t buf[TCP_MSS];
-  int bufpos = 0;
-
-  uart_serv_sock = netconn_new(NETCONN_TCP);
-  uart_serv_sock->callback = netconn_serv_cb;
-
-  netconn_bind(uart_serv_sock, IP_ADDR_ANY, 23);
-  netconn_listen(uart_serv_sock);
-
-
-  ESP_LOGI(__func__, "Listening on :23\n");
-
-  while (1) {
-    int c;
-    uart_event_t evt;
-
-    if (xQueueReceive(event_queue, (void*)&evt, 10) != pdFALSE) {
-
-      if(evt.type == UART_FIFO_OVF) {
-        uart_overrun_cnt++;
-      }
-      if(evt.type == UART_FRAME_ERR) {
-        uart_errors++;
-      }
-      if(evt.type == UART_BUFFER_FULL) {
-        uart_queue_full_cnt++;
-      }
-
-      if (uart_sockerr && uart_client_sock) {
-        uart_client_sock->callback = NULL;
-        netconn_delete(uart_client_sock);
-        uart_client_sock = 0;
-        uart_sockerr = 0;
-        DEBUG("Finish telnet connection\n");
-      }
-
-      if (!uart_client_sock && clients_pending) {
-        netconn_accept(uart_serv_sock, &uart_client_sock);
-
-        uart_sockerr = 0;
-        client_sock_pending_bytes = 0;
-
-        if (uart_client_sock) {
-          tcp_nagle_disable(uart_client_sock->pcb.tcp);
-
-          DEBUG("New telnet connection\n");
-          uart_client_sock->callback = netconn_cb;
-        }
-      }
-
-      size_t rxcount = 0;
-
-      bufpos = uart_read_bytes(0, &buf[bufpos], sizeof(buf)-bufpos, 0);
-
-      //DEBUG("uart rx:%d\n", bufpos);
-      if(bufpos > 0) {
-        uart_rx_count += 1;
-        http_term_broadcast_data(buf, bufpos);
-
-        if (uart_client_sock) {
-          if (bufpos) {
-            uart_get_buffered_data_len(0, &rxcount);
-            netconn_write(uart_client_sock, buf, bufpos, NETCONN_COPY |
-                (rxcount > 0 ? NETCONN_MORE : 0));
-          }
-        } // if (uart_client_sock)
-        bufpos = 0;
-      } //if(bufpos)
-
-      if (uart_client_sock && client_sock_pending_bytes) {
-        struct netbuf *nb = 0;
-        err_t err = netconn_recv(uart_client_sock, &nb);
-
-        if(err == ERR_OK) {
-          char *data = 0;
-          u16_t len = 0;
-          netbuf_data(nb, (void*) &data, &len);
-#ifdef USE_GPIO2_UART
-          uart_write_bytes(1, data, len);
-#else
-          uart_write_bytes(0, data, len);
-          uart_tx_count += len;
-#endif
-          netbuf_delete(nb);
-        }
-      }
-    }
-  }
+void debug_putc(char c, int flush) {
+	if(dbg_queue) {
+		xQueueSend(dbg_queue, &c, 0);
+	}
 }
 
 void platform_set_baud(uint32_t baud) {
@@ -285,22 +139,7 @@ void platform_set_baud(uint32_t baud) {
 	nvs_set_u32(h_nvs_conf, "uartbaud", baud);
 }
 
-bool cmd_setbaud(target *t, int argc, const char **argv) {
 
-	if (argc == 1) {
-		uint32_t baud;
-		uart_get_baudrate(0, &baud);
-		gdb_outf("Current baud: %d\n", baud);
-	}
-	  if (argc == 2) {
-		int baud = atoi(argv[1]);
-		gdb_outf("Setting baud: %d\n", baud);
-
-		platform_set_baud(baud);
-	  }
-
-  return 1;
-}
 
 static esp_err_t event_handler(void *ctx, system_event_t *event)
 {
@@ -343,8 +182,6 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
 
 void wifi_init_softap()
 {
-    //wifi_event_group = xEventGroupCreate();
-
     tcpip_adapter_init();
     ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
 
@@ -368,75 +205,443 @@ void wifi_init_softap()
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
-
 }
-extern void main();
-
 
 
 
 int putc_noop(int c) {
-	return 0;
+	return c;
 }
 
 int putc_remote(int c) {
-  return 0;
+	if(c == '\n')
+		debug_putc('\r', 0);
+
+	debug_putc(c, c=='\n' ? 1 : 0);
+	return c;
+}
+
+
+int g_vesc_sock;
+
+static void cb_packet_send(unsigned char *data, unsigned int len) {
+	if(g_vesc_sock != 0) {
+		int ret = send(g_vesc_sock, data, len, MSG_DONTWAIT);
+		if(ret <= 0) {
+			ESP_LOGE(__func__, "send failed (%s)", strerror(errno));
+			close(g_vesc_sock);
+			g_vesc_sock = 0;
+		}
+	}
+}
+
+struct mc_data mc_data;
+
+const char* faultToStr(mc_fault_code fault)
+{
+    switch (fault) {
+    case FAULT_CODE_NONE: return "FAULT_CODE_NONE";
+    case FAULT_CODE_OVER_VOLTAGE: return "FAULT_CODE_OVER_VOLTAGE";
+    case FAULT_CODE_UNDER_VOLTAGE: return "FAULT_CODE_UNDER_VOLTAGE";
+    case FAULT_CODE_DRV: return "FAULT_CODE_DRV";
+    case FAULT_CODE_ABS_OVER_CURRENT: return "FAULT_CODE_ABS_OVER_CURRENT";
+    case FAULT_CODE_OVER_TEMP_FET: return "FAULT_CODE_OVER_TEMP_FET";
+    case FAULT_CODE_OVER_TEMP_MOTOR: return "FAULT_CODE_OVER_TEMP_MOTOR";
+    case FAULT_CODE_GATE_DRIVER_OVER_VOLTAGE: return "FAULT_CODE_GATE_DRIVER_OVER_VOLTAGE";
+    case FAULT_CODE_GATE_DRIVER_UNDER_VOLTAGE: return "FAULT_CODE_GATE_DRIVER_UNDER_VOLTAGE";
+    case FAULT_CODE_MCU_UNDER_VOLTAGE: return "FAULT_CODE_MCU_UNDER_VOLTAGE";
+    case FAULT_CODE_BOOTING_FROM_WATCHDOG_RESET: return "FAULT_CODE_BOOTING_FROM_WATCHDOG_RESET";
+    case FAULT_CODE_ENCODER_SPI: return "FAULT_CODE_ENCODER_SPI";
+    case FAULT_CODE_ENCODER_SINCOS_BELOW_MIN_AMPLITUDE: return "FAULT_CODE_ENCODER_SINCOS_BELOW_MIN_AMPLITUDE";
+    case FAULT_CODE_ENCODER_SINCOS_ABOVE_MAX_AMPLITUDE: return "FAULT_CODE_ENCODER_SINCOS_ABOVE_MAX_AMPLITUDE";
+    case FAULT_CODE_FLASH_CORRUPTION: return "FAULT_CODE_FLASH_CORRUPTION";
+    case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_1: return "FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_1";
+    case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_2: return "FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_2";
+    case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3: return "FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3";
+    case FAULT_CODE_UNBALANCED_CURRENTS: return "FAULT_CODE_UNBALANCED_CURRENTS";
+    default: return "Unknown fault";
+    }
+}
+
+//#define DBG_PRINT_VAL(val) ESP_LOGI(#val, "= %f", (float)val)
+#define DBG_PRINT_VAL(val)
+
+mc_configuration mcconf;
+
+static double stored_odo;
+static double prev_odo;
+static uint32_t t_odo_save;
+static int g_initial_tach;
+
+static void cb_packet_process(unsigned char *data, unsigned int len) {
+	//ESP_LOGI(__func__, "len:%d", len);
+	display_set_connected(1);
+
+	switch(data[0]) {
+	case COMM_GET_MCCONF:
+	{
+		if(!confgenerator_deserialize_mcconf(data+1, &mcconf)) {
+			ESP_LOGE(__func__, "Failed to deserialize mcconf, wrong signature?");
+		} else {
+
+			ESP_LOGI(__func__, "mc_configuration size %d", sizeof(mc_configuration));
+			ESP_LOGI(__func__, "Battery Ah %f, cells: %d", 	mcconf.si_battery_ah, mcconf.si_battery_cells);
+			ESP_LOGI(__func__, "Motor Poles %d", mcconf.si_motor_poles);
+			ESP_LOGI(__func__, "Mot Current Min %f Max %f", mcconf.l_current_min, mcconf.l_current_max);
+			ESP_LOGI(__func__, "Wheel diam %f", mcconf.si_wheel_diameter);
+
+			display_set_mot_current_minmax(mcconf.l_current_min, mcconf.l_current_max);
+			display_set_bat_limits(mcconf.l_battery_cut_start, mcconf.l_battery_cut_end);
+		}
+
+		break;
+	}
+	case COMM_GET_VALUES:
+	case COMM_GET_VALUES_SELECTIVE:
+	{
+        uint32_t mask = 0xFFFFFFFF;
+        int32_t idx = 1;
+        if (data[0] == COMM_GET_VALUES_SELECTIVE) {
+            mask = buffer_get_uint32(data, &idx);
+        }
+
+
+        if (mask & ((1) << 0)) {
+        	mc_data.temp_mos = buffer_get_float16(data, 1e1, &idx);
+        	DBG_PRINT_VAL(mc_data.temp_mos);
+        }
+        if (mask & ((1) << 1)) {
+        	mc_data.temp_motor = buffer_get_float16(data,1e1, &idx);
+        	DBG_PRINT_VAL(mc_data.temp_motor);
+
+        }
+        if (mask & ((1) << 2)) {
+        	mc_data.current_motor = buffer_get_float32(data,1e2, &idx);
+        	DBG_PRINT_VAL(mc_data.current_motor);
+        }
+        if (mask & ((1) << 3)) {
+        	mc_data.current_in = buffer_get_float32(data,1e2, &idx);
+        	DBG_PRINT_VAL(mc_data.current_in);
+        }
+        if (mask & ((1) << 4)) {
+        	mc_data.id = buffer_get_float32(data,1e2, &idx);
+        	DBG_PRINT_VAL(mc_data.id);
+        }
+        if (mask & ((1) << 5)) {
+        	mc_data.iq = buffer_get_float32(data,1e2, &idx);
+        	DBG_PRINT_VAL(mc_data.iq);
+        }
+        if (mask & ((1) << 6)) {
+        	mc_data.duty_now = buffer_get_float16(data,1e3, &idx);
+        	DBG_PRINT_VAL(mc_data.duty_now);
+        }
+        if (mask & ((1) << 7)) {
+        	mc_data.rpm = buffer_get_float32(data,1e0, &idx);
+        	DBG_PRINT_VAL(mc_data.rpm);
+        }
+        if (mask & ((1) << 8)) {
+        	mc_data.v_in = buffer_get_float16(data, 1e1, &idx);
+        	DBG_PRINT_VAL(mc_data.v_in);
+        }
+        if (mask & ((1) << 9)) {
+        	mc_data.amp_hours = buffer_get_float32(data, 1e4, &idx);
+        	DBG_PRINT_VAL(mc_data.amp_hours);
+        }
+        if (mask & ((1) << 10)) {
+        	mc_data.amp_hours_charged = buffer_get_float32(data, 1e4, &idx);
+        	DBG_PRINT_VAL(mc_data.amp_hours_charged);
+        }
+        if (mask & ((1) << 11)) {
+        	mc_data.watt_hours = buffer_get_float32(data, 1e4, &idx);
+        	DBG_PRINT_VAL(mc_data.watt_hours);
+        }
+        if (mask & ((1) << 12)) {
+        	mc_data.watt_hours_charged = buffer_get_float32(data, 1e4, &idx);
+        	DBG_PRINT_VAL(mc_data.watt_hours_charged);
+        }
+        if (mask & ((1) << 13)) {
+        	mc_data.tachometer = buffer_get_int32(data, &idx);
+        	DBG_PRINT_VAL(mc_data.tachometer);
+        }
+        if (mask & ((1) << 14)) {
+        	if(mc_data.tachometer_abs == 0) {
+        		g_initial_tach = buffer_get_int32(data, &idx);
+            	mc_data.tachometer_abs = g_initial_tach;
+        	} else {
+        		mc_data.tachometer_abs = buffer_get_int32(data, &idx);
+        	}
+        	DBG_PRINT_VAL(mc_data.tachometer_abs);
+        }
+        if (mask & ((1) << 15)) {
+        	mc_data.fault_code = data[idx++];
+        	mc_data.fault_str = faultToStr(mc_data.fault_code);
+        	DBG_PRINT_VAL(mc_data.fault_code);
+        }
+
+        if (len - idx >= 4) {
+            if (mask & ((1) << 16)) {
+            	mc_data.position = buffer_get_float32(data, 1e6, &idx);
+            	DBG_PRINT_VAL(mc_data.position);
+            }
+        } else {
+        	mc_data.position = -1.0;
+        }
+
+        if (len - idx >= 1) {
+            if (mask & ((1) << 17)) {
+            	mc_data.vesc_id = data[idx++];
+            	DBG_PRINT_VAL(mc_data.vesc_id);
+            }
+        } else {
+        	mc_data.vesc_id = 255;
+        }
+
+        if (len - idx >= 6) {
+            if (mask & ((1) << 18)) {
+            	mc_data.temp_mos_1 = buffer_get_float16(data, 1e1, &idx);
+            	mc_data.temp_mos_2 = buffer_get_float16(data, 1e1, &idx);
+            	mc_data.temp_mos_3 = buffer_get_float16(data, 1e1, &idx);
+            	DBG_PRINT_VAL(mc_data.temp_mos_1);
+            	DBG_PRINT_VAL(mc_data.temp_mos_2);
+            	DBG_PRINT_VAL(mc_data.temp_mos_3);
+            }
+        }
+
+        if (len - idx >= 8) {
+            if (mask & ((1) << 19)) {
+            	mc_data.vd = buffer_get_float32(data, 1e3, &idx);
+            	DBG_PRINT_VAL(mc_data.vd);
+            }
+            if (mask & ((1) << 20)) {
+            	mc_data.vq = buffer_get_float32(data, 1e3, &idx);
+            	DBG_PRINT_VAL(mc_data.vq);
+            }
+        }
+
+        display_set_duty(mc_data.duty_now);
+        display_set_mos_temp(mc_data.temp_mos);
+        display_set_curr_power(mc_data.current_in * mc_data.v_in);
+        display_set_bat_info(mc_data.v_in, mc_data.current_in);
+        display_set_mot_current(mc_data.current_motor);
+        display_set_energy(mc_data.amp_hours_charged, mc_data.amp_hours);
+
+        float tach_ratio = (((1.0f * mcconf.si_gear_ratio) / (mcconf.si_motor_poles * 3.0f)) * (mcconf.si_wheel_diameter * M_PI)) / 1000.0f;
+
+        float trip_km = mc_data.tachometer_abs * tach_ratio;
+        display_set_trip(trip_km);
+
+        static uint32_t trip_time_ms;
+        static uint32_t prev_trip_timestamp;
+
+        display_set_mos_temp(mc_data.temp_mos);
+
+        if(abs(mc_data.rpm) > 0) {
+        	trip_time_ms += (platform_time_ms() - prev_trip_timestamp);
+
+        	display_set_triptime(trip_time_ms);
+
+        	float trip_km = (mc_data.tachometer_abs - g_initial_tach) * tach_ratio;
+        	//ESP_LOGI(__func__, "trip rel %f %f", trip_km, (((float)trip_time_ms/1000.0f)/3600.0f));
+        	display_set_avgspeed(trip_km / (((float)trip_time_ms/1000.0f)/3600.0f));
+        }
+
+        prev_trip_timestamp = platform_time_ms();
+
+        float speedFact = ((mcconf.si_motor_poles / 2.0f) * 60.0f *	mcconf.si_gear_ratio) / (mcconf.si_wheel_diameter * M_PI);
+        display_set_speed(mc_data.rpm / speedFact * 3.6);
+
+        if(prev_odo == 0) {
+        	prev_odo = mc_data.tachometer_abs;
+        } else {
+        	if( mcconf.si_gear_ratio != 0 && mcconf.si_motor_poles != 0) {
+        		int diff = (mc_data.tachometer_abs - prev_odo) * tach_ratio;
+        		if(diff > 0) {
+        			stored_odo += (mc_data.tachometer_abs - prev_odo) / 1000.0f;
+        		}
+        	}
+        	prev_odo = mc_data.tachometer_abs;
+        }
+        display_set_odo(stored_odo);
+
+        if(platform_time_ms() - t_odo_save > 5000) {
+        	uint64_t tmp;
+        	memcpy(&tmp, &stored_odo, sizeof(stored_odo));
+        	ESP_LOGI(__func__, "store odo %lf", stored_odo);
+        	nvs_set_u64(h_nvs_conf, "odometer", tmp);
+        	t_odo_save = platform_time_ms();
+        }
+
+		uint8_t req = COMM_GET_VALUES;
+		packet_send_packet(&req, 1, 0);
+
+	}
+	}
+}
+
+void vesc_poll_data() {
+	display_set_connected(0);
+
+	uint8_t req = COMM_GET_MCCONF;
+	packet_send_packet(&req, 1, 0);
+
+	req = COMM_GET_VALUES;
+	packet_send_packet(&req, 1, 0);
+}
+
+void vesc_task(void* param) {
+	int ret;
+	packet_init(cb_packet_send, cb_packet_process, 0);
+
+	nvs_get_u64(h_nvs_conf, "odometer", (uint64_t*)&stored_odo);
+	if(!isnormal(stored_odo)) {
+		stored_odo = 0;
+	}
+	display_set_odo(stored_odo);
+
+	while(1) {
+		if(!g_vesc_sock) {
+			g_vesc_sock = socket(AF_INET, SOCK_DGRAM, 0);
+
+#ifdef TCP
+			int one = 1;
+			setsockopt(g_vesc_sock, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+
+			struct linger sl;
+			sl.l_onoff = 0;		/* non-zero value enables linger option in kernel */
+			sl.l_linger = 0;	/* timeout interval in seconds */
+			setsockopt(g_vesc_sock, SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
+
+			struct timeval tv;
+			tv.tv_sec = 1;
+			tv.tv_usec = 0;
+			setsockopt(g_vesc_sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+#endif
+
+			struct sockaddr_in addr;
+			addr.sin_addr.s_addr = inet_addr("192.168.4.1");
+			addr.sin_port = htons(2323);
+			addr.sin_family = AF_INET;
+			ret = connect(g_vesc_sock, (struct sockaddr*)&addr, sizeof(addr));
+			if(ret < 0) {
+				ESP_LOGE(__func__, "connect failed (%s)", strerror(errno));
+				close(g_vesc_sock);
+				g_vesc_sock = 0;
+				vTaskDelay(200 / portTICK_PERIOD_MS);
+				continue;
+			}
+			ESP_LOGI(__func__, "connected");
+
+			vesc_poll_data();
+			;
+		}
+
+		if(!g_vesc_sock) {
+			vTaskDelay(100 / portTICK_PERIOD_MS);
+			continue;
+		}
+
+		fd_set fds;
+		struct timeval tv;
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+
+		FD_ZERO(&fds);
+		FD_SET(g_vesc_sock, &fds);
+
+		if((ret = select(g_vesc_sock+1, &fds, NULL, NULL, &tv) > 0)) {
+			char buf[100];
+			ret = recv(g_vesc_sock, buf, sizeof(buf), MSG_DONTWAIT);
+			if(ret > 0) {
+				for(int i = 0; i < ret; i++) {
+					packet_process_byte(buf[i], 0);
+				}
+			} else {
+				ESP_LOGE(__func__, "recv() failed");
+				close(g_vesc_sock);
+				g_vesc_sock = 0;
+			}
+		} else if(ret < 0) {
+			ESP_LOGE(__func__, "select() failed");
+			close(g_vesc_sock);
+			g_vesc_sock = 0;
+		} else {
+			/* timeout, hmm let's request data again */
+			ESP_LOGI(__func__, "vesc_poll_data");
+			vesc_poll_data();
+		}
+
+	}
+}
+
+void wifi_init_sta()
+{
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = "blackmagic_27FCF5E",
+            .password = "helloworld"
+        },
+    };
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA) );
+    ESP_ERROR_CHECK( esp_wifi_set_storage(WIFI_STORAGE_RAM) );
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config) );
+
+    ESP_ERROR_CHECK(esp_wifi_start() );
+
+    ESP_LOGI(__func__, "wifi_init_sta finished.");
+
 }
 
 void app_main(void) {
-  esp_log_set_putchar(putc_noop);
+    tcpip_adapter_init();
+    ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL) );
 
-  esp_err_t ret = nvs_flash_init();
-  if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
-    ESP_ERROR_CHECK(nvs_flash_erase());
-    ret = nvs_flash_init();
-  }
-  ESP_ERROR_CHECK(ret);
+	//esp_log_set_putchar(putc_noop);
 
-  ESP_ERROR_CHECK(nvs_open("config", NVS_READWRITE, &h_nvs_conf));
+	/* we are not using uart rx, disable interrupt */
+	uart_disable_rx_intr(0);
 
+	esp_err_t ret = nvs_flash_init();
+	if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
+		ESP_ERROR_CHECK(nvs_flash_erase());
+		ret = nvs_flash_init();
+	}
+	ESP_ERROR_CHECK(ret);
 
-  wifi_init_softap();
+	ESP_ERROR_CHECK(nvs_open("config", NVS_READWRITE, &h_nvs_conf));
 
-  esp_log_set_putchar(putc_remote);
+	vTaskPrioritySet(NULL, 3);
 
-  uint32_t baud = 230400;
-  nvs_get_u32(h_nvs_conf, "uartbaud", &baud);
-
-  uart_set_baudrate(0, baud);
-  uart_set_baudrate(1, baud);
-
-  esp_wifi_set_ps (WIFI_PS_NONE);
-
-  ESP_ERROR_CHECK(uart_driver_install(0, 4096, 256, 16, &event_queue, 0));
-
-  uart_intr_config_t uart_intr = {
-      .intr_enable_mask = UART_RXFIFO_FULL_INT_ENA_M
-      | UART_RXFIFO_TOUT_INT_ENA_M
-      | UART_FRM_ERR_INT_ENA_M
-      | UART_RXFIFO_OVF_INT_ENA_M,
-      .rxfifo_full_thresh = 80,
-      .rx_timeout_thresh = 2,
-      .txfifo_empty_intr_thresh = 10
-  };
-  uart_intr_config(0, &uart_intr);
-
-  httpd_start();
-
-  xTaskCreate(&main, "bmp_main", 8192, NULL, 2, NULL);
-  xTaskCreate(&uart_rx_task, "io_main", 1500, NULL, 3, NULL);
-
-  ota_tftp_init_server(69);
+	ESP_LOGI(__func__, "display_setup begin\n");
+	display_setup();
+	ESP_LOGI(__func__, "display_setup end\n");
 
 
-  ESP_LOGI(__func__, "Free heap %d\n", esp_get_free_heap_size());
+	//wifi_init_softap();
+	wifi_init_sta();
 
+	httpd_start();
+
+	//esp_log_set_putchar(putc_remote);
+
+	esp_wifi_set_ps(WIFI_PS_NONE);
+
+
+	xTaskCreate(&dbg_task, "dbg_main", 800, NULL, 4, NULL);
+	xTaskCreate(&vesc_task, "vesc", 1500, NULL, 3, NULL);
+	//xTaskCreate(&uart_rx_task, "io_main", 2048, NULL, 3, NULL);
+
+	ota_tftp_init_server(69, 7);
+
+	ESP_LOGI(__func__, "Free heap %d\n", esp_get_free_heap_size());
+	ESP_LOGI(__func__, "vdd33 %d", esp_wifi_get_vdd33());
+
+
+
+
+
+	display_run();
 }
 
-#ifndef ENABLE_DEBUG
-__attribute((used))
-int ets_printf(const char *__restrict c, ...) { return 0; }
-
-__attribute((used))
-int printf(const char *__restrict c, ...) { return 0; }
-#endif
