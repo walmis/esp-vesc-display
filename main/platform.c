@@ -119,7 +119,7 @@ void dbg_task(void *parameters) {
 				http_debug_putc(*mem, *mem=='\n' ? 1 : 0);
 				mem++;
 			}
-			netconn_sendto(nc, nb, &ip, 6666);
+			//netconn_sendto(nc, nb, &ip, 6666);
 
 			netbuf_delete(nb);
 		}
@@ -235,30 +235,46 @@ static void cb_packet_send(unsigned char *data, unsigned int len) {
 	}
 }
 
+double read_odometer() {
+	double odo;
+	nvs_get_u64(h_nvs_conf, "odometer", (uint64_t*)&odo);
+	if(!isnormal(odo)) {
+		return 0;
+	} else {
+		return odo;
+	}
+}
+
+esp_err_t store_odometer(double val) {
+	uint64_t tmp;
+	memcpy(&tmp, &val, sizeof(val));
+	return nvs_set_u64(h_nvs_conf, "odometer", tmp);
+}
+
 struct mc_data mc_data;
 
 const char* faultToStr(mc_fault_code fault)
 {
     switch (fault) {
-    case FAULT_CODE_NONE: return "FAULT_CODE_NONE";
-    case FAULT_CODE_OVER_VOLTAGE: return "FAULT_CODE_OVER_VOLTAGE";
-    case FAULT_CODE_UNDER_VOLTAGE: return "FAULT_CODE_UNDER_VOLTAGE";
-    case FAULT_CODE_DRV: return "FAULT_CODE_DRV";
-    case FAULT_CODE_ABS_OVER_CURRENT: return "FAULT_CODE_ABS_OVER_CURRENT";
-    case FAULT_CODE_OVER_TEMP_FET: return "FAULT_CODE_OVER_TEMP_FET";
-    case FAULT_CODE_OVER_TEMP_MOTOR: return "FAULT_CODE_OVER_TEMP_MOTOR";
-    case FAULT_CODE_GATE_DRIVER_OVER_VOLTAGE: return "FAULT_CODE_GATE_DRIVER_OVER_VOLTAGE";
-    case FAULT_CODE_GATE_DRIVER_UNDER_VOLTAGE: return "FAULT_CODE_GATE_DRIVER_UNDER_VOLTAGE";
-    case FAULT_CODE_MCU_UNDER_VOLTAGE: return "FAULT_CODE_MCU_UNDER_VOLTAGE";
-    case FAULT_CODE_BOOTING_FROM_WATCHDOG_RESET: return "FAULT_CODE_BOOTING_FROM_WATCHDOG_RESET";
-    case FAULT_CODE_ENCODER_SPI: return "FAULT_CODE_ENCODER_SPI";
-    case FAULT_CODE_ENCODER_SINCOS_BELOW_MIN_AMPLITUDE: return "FAULT_CODE_ENCODER_SINCOS_BELOW_MIN_AMPLITUDE";
-    case FAULT_CODE_ENCODER_SINCOS_ABOVE_MAX_AMPLITUDE: return "FAULT_CODE_ENCODER_SINCOS_ABOVE_MAX_AMPLITUDE";
-    case FAULT_CODE_FLASH_CORRUPTION: return "FAULT_CODE_FLASH_CORRUPTION";
-    case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_1: return "FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_1";
-    case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_2: return "FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_2";
-    case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3: return "FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3";
-    case FAULT_CODE_UNBALANCED_CURRENTS: return "FAULT_CODE_UNBALANCED_CURRENTS";
+    case FAULT_CODE_NONE: return NULL;
+    case FAULT_CODE_OVER_VOLTAGE: return "FAULT_OVER_VOLTAGE";
+    case FAULT_CODE_UNDER_VOLTAGE: return "FAULT_UNDER_VOLTAGE";
+    case FAULT_CODE_DRV: return "FAULT_DRV";
+    case FAULT_CODE_ABS_OVER_CURRENT: return "FAULT_ABS_OVER_CURRENT";
+    case FAULT_CODE_OVER_TEMP_FET: return "FAULT_OVER_TEMP_FET";
+    case FAULT_CODE_OVER_TEMP_MOTOR: return "FAULT_OVER_TEMP_MOTOR";
+    case FAULT_CODE_GATE_DRIVER_OVER_VOLTAGE: return "FAULT_GATE_DRIVER_OVER_VOLTAGE";
+    case FAULT_CODE_GATE_DRIVER_UNDER_VOLTAGE: return "FAULT_GATE_DRIVER_UNDER_VOLTAGE";
+    case FAULT_CODE_MCU_UNDER_VOLTAGE: return "FAULT_MCU_UNDER_VOLTAGE";
+    case FAULT_CODE_BOOTING_FROM_WATCHDOG_RESET: return "FAULT_BOOTING_FROM_WATCHDOG_RESET";
+    case FAULT_CODE_ENCODER_SPI: return "FAULT_ENCODER_SPI";
+    case FAULT_CODE_ENCODER_SINCOS_BELOW_MIN_AMPLITUDE: return "FAULT_ENCODER_SINCOS_BELOW_MIN_AMPLITUDE";
+    case FAULT_CODE_ENCODER_SINCOS_ABOVE_MAX_AMPLITUDE: return "FAULT_ENCODER_SINCOS_ABOVE_MAX_AMPLITUDE";
+    case FAULT_CODE_FLASH_CORRUPTION: return "FAULT_FLASH_CORRUPTION";
+    case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_1: return "FAULT_HIGH_OFFSET_CURRENT_SENSOR_1";
+    case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_2: return "FAULT_HIGH_OFFSET_CURRENT_SENSOR_2";
+    case FAULT_CODE_HIGH_OFFSET_CURRENT_SENSOR_3: return "FAULT_HIGH_OFFSET_CURRENT_SENSOR_3";
+    case FAULT_CODE_UNBALANCED_CURRENTS: return "FAULT_UNBALANCED_CURRENTS";
     default: return "Unknown fault";
     }
 }
@@ -269,7 +285,7 @@ const char* faultToStr(mc_fault_code fault)
 mc_configuration mcconf;
 
 static double stored_odo;
-static double prev_odo;
+static int prev_odo;
 static uint32_t t_odo_save;
 static int g_initial_tach;
 
@@ -375,6 +391,9 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         if (mask & ((1) << 15)) {
         	mc_data.fault_code = data[idx++];
         	mc_data.fault_str = faultToStr(mc_data.fault_code);
+        	if(mc_data.fault_str) {
+        		display_show_message(mc_data.fault_str);
+        	}
         	DBG_PRINT_VAL(mc_data.fault_code);
         }
 
@@ -450,24 +469,27 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         float speedFact = ((mcconf.si_motor_poles / 2.0f) * 60.0f *	mcconf.si_gear_ratio) / (mcconf.si_wheel_diameter * M_PI);
         display_set_speed(mc_data.rpm / speedFact * 3.6);
 
+
         if(prev_odo == 0) {
         	prev_odo = mc_data.tachometer_abs;
         } else {
         	if( mcconf.si_gear_ratio != 0 && mcconf.si_motor_poles != 0) {
-        		int diff = (mc_data.tachometer_abs - prev_odo) * tach_ratio;
+        		int diff = (mc_data.tachometer_abs - prev_odo);
         		if(diff > 0) {
-        			stored_odo += (mc_data.tachometer_abs - prev_odo) / 1000.0f;
+        			stored_odo += (double)diff * tach_ratio;
         		}
         	}
         	prev_odo = mc_data.tachometer_abs;
         }
         display_set_odo(stored_odo);
 
-        if(platform_time_ms() - t_odo_save > 5000) {
-        	uint64_t tmp;
-        	memcpy(&tmp, &stored_odo, sizeof(stored_odo));
-        	ESP_LOGI(__func__, "store odo %lf", stored_odo);
-        	nvs_set_u64(h_nvs_conf, "odometer", tmp);
+        if(platform_time_ms() - t_odo_save > 5000 && read_odometer() < stored_odo) {
+        	ESP_LOGI(__func__, "Store odo value %f", stored_odo);
+
+        	esp_err_t ret = store_odometer(stored_odo);
+        	if(ret != ESP_OK) {
+        		display_show_message("ODO store fail");
+        	}
         	t_odo_save = platform_time_ms();
         }
 
@@ -488,14 +510,13 @@ void vesc_poll_data() {
 	packet_send_packet(&req, 1, 0);
 }
 
+
+
 void vesc_task(void* param) {
 	int ret;
 	packet_init(cb_packet_send, cb_packet_process, 0);
 
-	nvs_get_u64(h_nvs_conf, "odometer", (uint64_t*)&stored_odo);
-	if(!isnormal(stored_odo)) {
-		stored_odo = 0;
-	}
+	stored_odo = read_odometer();
 	display_set_odo(stored_odo);
 
 	while(1) {
@@ -624,7 +645,7 @@ void app_main(void) {
 
 	httpd_start();
 
-	//esp_log_set_putchar(putc_remote);
+	esp_log_set_putchar(putc_remote);
 
 	esp_wifi_set_ps(WIFI_PS_NONE);
 

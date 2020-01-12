@@ -301,6 +301,7 @@ static lv_theme_t * theme;
 static lv_obj_t* lbl_volts;
 static lv_obj_t* lbl_amps;
 static lv_obj_t* lbl_wifisymbol;
+static lv_obj_t* lbl_message;
 
 extern "C"
 void display_setup() {
@@ -374,8 +375,6 @@ void display_setup() {
     //lv_label_set_style(lbl, LV_LABEL_STYLE_MAIN, &font_test_style);
     lv_label_set_text(lbl_kmh, "km/h");
     lv_obj_align(lbl_kmh, NULL, LV_ALIGN_CENTER, 0, 28);
-
-
 
     lmeter = lv_lmeter_create(lv_disp_get_layer_top(disp), NULL);
     lv_lmeter_set_range(lmeter, 0, 50);
@@ -510,6 +509,12 @@ void display_setup() {
     lv_obj_align(duty_gauge, 0, LV_ALIGN_IN_LEFT_MID, 2, -34);
     /* ********** */
 
+	lbl_message = lv_label_create(lv_disp_get_layer_top(disp), NULL);
+	//lv_label_set_style(lbl_message, LV_LABEL_STYLE_MAIN, &font_10_style);
+	lv_label_set_recolor(lbl_message, true);
+	lv_label_set_static_text(lbl_message, "");
+	lv_obj_align(lbl_message, NULL, LV_ALIGN_IN_BOTTOM_LEFT, 4, -21);
+
 #ifdef DOUBLE_BUFFER
 	xTaskCreate(&lvgl_flush_task, "gfx_flush", 1024, NULL, 7, NULL);
 #endif
@@ -627,6 +632,16 @@ void display_set_odo(float dist) {
 		LVGL_UNLOCK();
 	});
 
+}
+
+void display_show_message(const char* message) {
+	ON_CHANGED(message, {
+		if(!message) {
+			lv_label_set_text(lbl_message, "");
+		} else {
+			lv_label_set_text_fmt(lbl_message, "#ff0000 %s#", message);
+		}
+	});
 }
 
 void display_set_duty(float duty) {

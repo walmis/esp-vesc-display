@@ -19,7 +19,7 @@ void display_set_avgspeed(float avgspeed);
 void display_set_triptime(int trptime_ms);
 void display_set_fet_temp(float temp);
 void display_set_connected(bool connected);
-
+void display_show_message(const char* message);
 
 void display_run();
 void display_setup();
