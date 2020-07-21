@@ -120,7 +120,7 @@ void IRAM_ATTR lvgl_flush_task(void* parm) {
 #elif CONFIG_ESP_TFT_ILI9225
 		tft._setWindow(args.area.x1, args.area.y1, args.area.x2, args.area.y2, L2R_TopDown);
 #endif
-		
+		spi_beginTransaction(CONFIG_GPIO_TFT_CS);
 		int32_t x, y;
 		for(y = args.area.y1; y <= args.area.y2; y++) {
 			for(x = args.area.x1; x <= args.area.x2; x++) {
@@ -129,6 +129,7 @@ void IRAM_ATTR lvgl_flush_task(void* parm) {
 			}
 		}
 		spi_flushdata();
+		spi_endTransaction();
 
 		lv_disp_flush_ready(args.disp);         /* Indicate you are ready with the flushing*/
 	}
@@ -221,13 +222,15 @@ void display_setup() {
     theme = lv_theme_material_init(20, 0);
     lv_theme_set_current(theme);
 
-    lv_obj_set_style(lv_disp_get_layer_top(disp), theme->style.scr);
+	lv_obj_t* top_layer = lv_disp_get_layer_top(disp);
+
+    lv_obj_set_style(top_layer, theme->style.scr);
 
     /**
      * Get a pointer to the theme
      * @return pointer to the theme
      */
-    bar_power = lv_bar_create(lv_disp_get_layer_top(disp), NULL);
+    bar_power = lv_bar_create(top_layer, NULL);
     lv_obj_set_height(bar_power, 10);
     lv_bar_set_range(bar_power, -100, 100);
     lv_bar_set_value(bar_power, 0, 0);
@@ -235,7 +238,7 @@ void display_setup() {
     lv_obj_align(bar_power, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -40);
 
 
-    lbl_speed = lv_label_create(lv_disp_get_layer_top(disp), NULL);
+    lbl_speed = lv_label_create(top_layer, NULL);
 
     static lv_style_t font_large_num;
     lv_style_copy(&font_large_num, lv_obj_get_style(lbl_speed));
@@ -262,19 +265,19 @@ void display_setup() {
     lv_label_set_text(lbl_speed, "00");
     lv_obj_align(lbl_speed, NULL, LV_ALIGN_CENTER, 0, 0);
 
-    lv_obj_t* lbl_kmh = lv_label_create(lv_disp_get_layer_top(disp), NULL);
+    lv_obj_t* lbl_kmh = lv_label_create(top_layer, NULL);
     //lv_label_set_style(lbl, LV_LABEL_STYLE_MAIN, &font_test_style);
     lv_label_set_text(lbl_kmh, "km/h");
     lv_obj_align(lbl_kmh, NULL, LV_ALIGN_CENTER, 0, 28);
 
-    lmeter = lv_lmeter_create(lv_disp_get_layer_top(disp), NULL);
+    lmeter = lv_lmeter_create(top_layer, NULL);
     lv_lmeter_set_range(lmeter, 0, 50);
     lv_obj_set_height(lmeter, 120);
     lv_obj_set_width(lmeter, 100);
     lv_obj_align(lmeter, NULL, LV_ALIGN_CENTER, 0, 0);
 
     {
-    	lv_obj_t* cont = lv_cont_create(lv_disp_get_layer_top(disp), 0);
+    	lv_obj_t* cont = lv_cont_create(top_layer, 0);
 		lbl_func = lv_label_create(cont, NULL);
 		//lv_label_set_style(lbl_func, LV_LABEL_STYLE_MAIN, &font_22_style);
 		lv_label_set_text(lbl_func, "ODO");
@@ -294,7 +297,7 @@ void display_setup() {
     }
 
     {
-    	lv_obj_t* cont = lv_cont_create(lv_disp_get_layer_top(disp), 0);
+    	lv_obj_t* cont = lv_cont_create(top_layer, 0);
 
 		lbl_trip = lv_label_create(cont, NULL);
 		//lv_label_set_style(lbl_func, LV_LABEL_STYLE_MAIN, &font_22_style);
@@ -320,14 +323,14 @@ void display_setup() {
 //    lv_obj_align(lbl_bat, 0, LV_ALIGN_IN_TOP_LEFT, 2, -2);
 //    lv_label_set_recolor(lbl_bat, 1);
 
-    lbl_mah = lv_label_create(lv_disp_get_layer_top(disp), NULL);
+    lbl_mah = lv_label_create(top_layer, NULL);
     lv_label_set_style(lbl_mah, LV_LABEL_STYLE_MAIN, &font_iosevka_14_style);
     lv_label_set_text_fmt(lbl_mah, "mAh\nDSG%05d\nCHG%05d", 0, 0);
     lv_label_set_align(lbl_mah, LV_LABEL_ALIGN_RIGHT);
 
     lv_obj_align(lbl_mah, 0, LV_ALIGN_IN_TOP_RIGHT, -2, 0);
 
-    lv_obj_t* cont = lv_cont_create(lv_disp_get_layer_top(disp), NULL);
+    lv_obj_t* cont = lv_cont_create(top_layer, NULL);
     lv_cont_set_fit2(cont, LV_FIT_NONE, LV_FIT_TIGHT);
     lv_obj_set_width(cont, 60);
     static lv_style_t cont_style;
@@ -346,7 +349,7 @@ void display_setup() {
 
     lv_obj_align(cont, 0, LV_ALIGN_IN_LEFT_MID, 2, 0);
 
-    cont = lv_cont_create(lv_disp_get_layer_top(disp), NULL);
+    cont = lv_cont_create(top_layer, NULL);
     lv_obj_set_style(cont, &cont_style);
 
 
@@ -362,7 +365,7 @@ void display_setup() {
     lv_obj_align(cont, 0, LV_ALIGN_IN_RIGHT_MID, -2, 0);
 
     /* status bar */
-    lv_obj_t* statusbar = lv_cont_create(lv_disp_get_layer_top(disp), NULL);
+    lv_obj_t* statusbar = lv_cont_create(top_layer, NULL);
     lv_cont_set_style(statusbar, LV_CONT_STYLE_MAIN, theme->style.bg);
 
     lbl_wifisymbol = lv_label_create(statusbar, NULL);
@@ -391,7 +394,7 @@ void display_setup() {
     lv_obj_align(statusbar, 0, LV_ALIGN_IN_TOP_LEFT, 2, -2);
 
     /* duty gauge */
-    duty_gauge = lv_gauge_create(lv_disp_get_layer_top(disp), NULL);
+    duty_gauge = lv_gauge_create(top_layer, NULL);
     lv_gauge_set_range(duty_gauge, 0, 100);
     lv_obj_set_width(duty_gauge, 60);
     lv_obj_set_height(duty_gauge, 60);
@@ -400,7 +403,7 @@ void display_setup() {
     lv_obj_align(duty_gauge, 0, LV_ALIGN_IN_LEFT_MID, 2, -34);
     /* ********** */
 
-	lbl_message = lv_label_create(lv_disp_get_layer_top(disp), NULL);
+	lbl_message = lv_label_create(top_layer, NULL);
 	//lv_label_set_style(lbl_message, LV_LABEL_STYLE_MAIN, &font_10_style);
 	lv_label_set_recolor(lbl_message, true);
 	lv_label_set_static_text(lbl_message, "");

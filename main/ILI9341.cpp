@@ -140,10 +140,11 @@ void ILI9341_set_rotation(uint8_t m) {
     m = (MADCTL_MX | MADCTL_MY | MADCTL_MV | MADCTL_BGR);
     break;
   }
-
+  spi_beginTransaction(CONFIG_GPIO_TFT_CS);
   spi_writeCommand8(ILI9341_MADCTL);
   spi_addbuffer8(m);
   spi_flushdata();
+  spi_endTransaction();
 }
 
 void ILI9341_init() {
@@ -159,6 +160,8 @@ void ILI9341_init() {
     gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_LED, 1);
     gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_DC, 1);
     gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_CS, 1);
+
+    spi_beginTransaction(CONFIG_GPIO_TFT_CS);
 
 #if CONFIG_GPIO_TFT_RST < 0                // If no hardware reset pin...
     spi_writeCommand8(ILI9341_SWRESET); // Engage software reset
@@ -182,11 +185,14 @@ void ILI9341_init() {
     }
   }
 
+  spi_endTransaction();
+
   ILI9341_set_rotation(CONFIG_DISPLAY_ROTATION);
 
 }
 
 void ILI9341_setWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+    spi_beginTransaction(CONFIG_GPIO_TFT_CS);
     spi_writeCommand8(ILI9341_CASET); // Column address set
     spi_writeData16(x0);
     spi_writeData16(x1);
@@ -194,4 +200,5 @@ void ILI9341_setWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     spi_writeData16(y0);
     spi_writeData16(y1);
     spi_writeCommand8(ILI9341_RAMWR); // Write to RAM
+    spi_endTransaction();
 }

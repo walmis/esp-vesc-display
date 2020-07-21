@@ -1,8 +1,10 @@
 #include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+
 
 #include "spi.h"
 #include "driver/spi.h"
-#include "task.h"
 #include "sdkconfig.h"
 #include <driver/gpio.h>
 #include "esp_log.h"
@@ -13,6 +15,9 @@ static volatile bool spi_command_mode = 0;
 static IRAM_ATTR uint32_t spi_buffer[16];
 static IRAM_ATTR int spi_bufpos;
 static IRAM_ATTR void spi_event_callback(int event, void *arg);
+
+static uint8_t _cs_pin;
+static xSemaphoreHandle _spi_lock;
 
 IRAM_ATTR
 void spi_addbuffer16(uint16_t d) {
@@ -103,6 +108,10 @@ void spi_flushdata() {
 }
 
 void spi_init() {
+    if(!_spi_lock) {
+        _spi_lock = xSemaphoreCreateMutex();
+    }
+
 	spi_config_t spi_config;
 	// Load default interface parameters
 	// CS_EN:1, MISO_EN:1, MOSI_EN:1, BYTE_TX_ORDER:1, BYTE_TX_ORDER:1, BIT_RX_ORDER:0, BIT_TX_ORDER:0, CPHA:0, CPOL:0
@@ -112,7 +121,8 @@ void spi_init() {
 	spi_config.intr_enable.val = SPI_MASTER_DEFAULT_INTR_ENABLE;
 	// Cancel hardware cs
 	spi_config.interface.cs_en = 0;
-	spi_config.interface.miso_en = 0;
+	spi_config.interface.miso_en = 1;
+    spi_config.interface.mosi_en = 1;
 	spi_config.interface.cpol = 1;
 	spi_config.interface.cpha = 1;
 	spi_config.interface.byte_tx_order = SPI_BYTE_ORDER_LSB_FIRST;
@@ -127,6 +137,15 @@ void spi_init() {
 	spi_init(HSPI_HOST, &spi_config);
 }
 
+void spi_beginTransaction(uint8_t cspin) {
+    xSemaphoreTake(_spi_lock, portMAX_DELAY );
+    _cs_pin = cspin;
+}
+
+void spi_endTransaction() {
+    xSemaphoreGive(_spi_lock);
+}
+
 static IRAM_ATTR void spi_event_callback(int event, void *arg)
 {
 	switch (event) {
@@ -139,12 +158,12 @@ static IRAM_ATTR void spi_event_callback(int event, void *arg)
 			if(spi_command_mode) {
 				gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 0);
 			}
-			gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_CS, 0);
+			gpio_set_level((gpio_num_t)_cs_pin, 0);
 		}
 		break;
 
 		case SPI_TRANS_DONE_EVENT: {
-			gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_CS, 1);
+			gpio_set_level((gpio_num_t)_cs_pin, 1);
 			gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 1);
 
 			BaseType_t xHigherPriorityTaskWoken = 0;
