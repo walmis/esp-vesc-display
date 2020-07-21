@@ -14,15 +14,19 @@
 /* clang-format off */
 
 #include <stdint.h>
-
+#include "sdkconfig.h"
 /*====================
    Graphical settings
  *====================*/
 
 /* Maximal horizontal and vertical resolution to support by the library.*/
+#ifdef CONFIG_ESP_TFT_ILI9225
 #define LV_HOR_RES_MAX          (220)
 #define LV_VER_RES_MAX          (176)
-
+#elif CONFIG_ESP_TFT_ILI9341
+#define LV_HOR_RES_MAX          (320)
+#define LV_VER_RES_MAX          (240)
+#endif
 /* Color depth:
  * - 1:  1 byte per pixel
  * - 8:  RGB233

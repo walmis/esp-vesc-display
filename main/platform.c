@@ -60,14 +60,17 @@
 #include <math.h>
 
 #include "display.h"
+#include "sdkconfig.h"
 
 #define ACCESS_POINT_MODE
 #define AP_SSID	 "blackmagic"
 #define AP_PSK	 "helloworld"
 
-nvs_handle h_nvs_conf;
-
-uint32_t t_last_packet;
+static nvs_handle h_nvs_conf;
+static uint32_t t_last_packet;
+static xSemaphoreHandle uart_lock;
+static xQueueHandle uart_events_queue;
+static xQueueHandle dbg_queue;
 
 const char*
 platform_target_voltage(void) {
@@ -91,19 +94,9 @@ int platform_hwversion(void) {
   return 0;
 }
 
-#define EV_NETNEWDATA 0xFF
-#define EV_NETNEWCONN 0xFE
-#define EV_NETERR 0xFD
-
-
-
-xQueueHandle dbg_queue;
 
 void dbg_task(void *parameters) {
 	dbg_queue = xQueueCreate(1024, 1);
-	struct netconn* nc = netconn_new(NETCONN_UDP);
-	ip_addr_t ip;
-	IP_ADDR4(&ip, 192, 168, 4, 255);
 
 	while(1) {
 
@@ -201,7 +194,6 @@ void wifi_init_softap()
 
     wifi_config.ap.ssid_len = sprintf((char*)wifi_config.ap.ssid, AP_SSID "_%X", (uint32_t)chipid);
 
-
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -224,7 +216,11 @@ int putc_remote(int c) {
 
 int g_vesc_sock;
 
-static void cb_packet_send(unsigned char *data, unsigned int len) {
+static void do_vesc_packet_send(unsigned char *data, unsigned int len) {
+#ifdef CONFIG_ESP_VESC_UART
+	uart_write_bytes(0, (const char*)data, len);
+	uart_wait_tx_done(0, 10000);
+#else
 	if(g_vesc_sock != 0) {
 		int ret = send(g_vesc_sock, data, len, MSG_DONTWAIT);
 		if(ret <= 0) {
@@ -233,6 +229,7 @@ static void cb_packet_send(unsigned char *data, unsigned int len) {
 			g_vesc_sock = 0;
 		}
 	}
+#endif
 }
 
 double read_odometer() {
@@ -288,6 +285,7 @@ static double stored_odo;
 static int prev_odo;
 static uint32_t t_odo_save;
 static int g_initial_tach;
+static bool have_mcconf;
 
 static void cb_packet_process(unsigned char *data, unsigned int len) {
 	//ESP_LOGI(__func__, "len:%d", len);
@@ -308,6 +306,8 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
 
 			display_set_mot_current_minmax(mcconf.l_current_min, mcconf.l_current_max);
 			display_set_bat_limits(mcconf.l_battery_cut_start, mcconf.l_battery_cut_end);
+
+			have_mcconf = true;
 		}
 
 		break;
@@ -510,14 +510,27 @@ void vesc_poll_data() {
 	packet_send_packet(&req, 1, 0);
 }
 
+#ifdef CONFIG_ESP_VESC_UART
+void vesc_uart_task(void* param) {
+	uart_event_t event;
+	uint8_t buffer[64];
+	while(1) {
+		int res = uart_read_bytes(0, buffer, sizeof(buffer), 100);
+		for(int i = 0; i < res; i++) {
+			packet_process_byte(buffer[i], 0);
+		}
 
+		if(!have_mcconf) {
+			vesc_poll_data();
+		}
+	}
+}
+#endif
 
-void vesc_task(void* param) {
+#ifndef CONFIG_ESP_VESC_UART
+void vesc_net_task(void* param) {
 	int ret;
-	packet_init(cb_packet_send, cb_packet_process, 0);
 
-	stored_odo = read_odometer();
-	display_set_odo(stored_odo);
 
 	while(1) {
 		if(!g_vesc_sock) {
@@ -593,6 +606,7 @@ void vesc_task(void* param) {
 
 	}
 }
+#endif
 
 void wifi_init_sta()
 {
@@ -622,7 +636,15 @@ void app_main(void) {
 	//esp_log_set_putchar(putc_noop);
 
 	/* we are not using uart rx, disable interrupt */
-	uart_disable_rx_intr(0);
+	//uart_disable_rx_intr(0);
+	xTaskCreate(&dbg_task, "dbg_main", 800, NULL, 4, NULL);
+
+
+#ifdef CONFIG_ESP_VESC_UART
+
+	uart_driver_install(0, 256, 256, 16, &uart_events_queue, 0);
+	uart_set_baudrate(0, CONFIG_ESP_UART_BAUD);
+#endif
 
 	esp_err_t ret = nvs_flash_init();
 	if (ret == ESP_ERR_NVS_NO_FREE_PAGES) {
@@ -650,18 +672,21 @@ void app_main(void) {
 	esp_wifi_set_ps(WIFI_PS_NONE);
 
 
-	xTaskCreate(&dbg_task, "dbg_main", 800, NULL, 4, NULL);
-	xTaskCreate(&vesc_task, "vesc", 1500, NULL, 3, NULL);
+	packet_init(do_vesc_packet_send, cb_packet_process, 0);
+	stored_odo = read_odometer();
+	display_set_odo(stored_odo);
+
+#ifdef CONFIG_ESP_VESC_UART
+	xTaskCreate(&vesc_uart_task, "vesc_uart", 1500, NULL, 3, NULL);
+#else
+	xTaskCreate(&vesc_net_task, "vesc_net", 1500, NULL, 3, NULL);
+#endif
 	//xTaskCreate(&uart_rx_task, "io_main", 2048, NULL, 3, NULL);
 
 	ota_tftp_init_server(69, 7);
 
 	ESP_LOGI(__func__, "Free heap %d\n", esp_get_free_heap_size());
 	ESP_LOGI(__func__, "vdd33 %d", esp_wifi_get_vdd33());
-
-
-
-
 
 	display_run();
 }

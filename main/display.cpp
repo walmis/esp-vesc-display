@@ -8,12 +8,15 @@
 #include <driver/spi.h>
 #include "esp8266/gpio_struct.h"
 #include "esp_log.h"
+#include "sdkconfig.h"
 #include <lvgl.h>
+#include "ILI9341.h"
+#include "spi.h"
 
-#define GPIO_TFT_LED (gpio_num_t)4
-#define GPIO_TFT_RST (gpio_num_t)0
-#define GPIO_TFT_DC  (gpio_num_t)15
-#define GPIO_TFT_CS  (gpio_num_t)2
+//#define GPIO_TFT_LED (gpio_num_t)4
+//#define GPIO_TFT_RST (gpio_num_t)0
+//#define GPIO_TFT_DC  (gpio_num_t)15
+//#define GPIO_TFT_CS  (gpio_num_t)2
 
 #define DOUBLE_BUFFER
 
@@ -30,8 +33,6 @@ static xQueueHandle flush_q;
 #endif
 
 static SemaphoreHandle_t lvgl_mutex;
-static TaskHandle_t spi_task_notify_handle;
-static IRAM_ATTR void spi_event_callback(int event, void *arg);
 static lv_disp_drv_t disp_drv;               /*Descriptor of a display driver*/
 static lv_disp_buf_t disp_buf;
 static lv_color_t buf[LV_HOR_RES_MAX * 10];                     /*Declare a buffer for 10 lines*/
@@ -39,10 +40,8 @@ static lv_color_t buf[LV_HOR_RES_MAX * 10];                     /*Declare a buff
 static lv_color_t buf2[LV_HOR_RES_MAX * 10];                     /*Declare a buffer for 10 lines*/
 #endif
 
-static volatile bool spi_command_mode = 0;
 
-static IRAM_ATTR uint32_t spi_buffer[16];
-static IRAM_ATTR int spi_bufpos;
+
 
 #define LVGL_LOCK()   xSemaphoreTakeRecursive(lvgl_mutex, portMAX_DELAY );
 #define LVGL_UNLOCK() xSemaphoreGiveRecursive(lvgl_mutex );
@@ -55,73 +54,9 @@ static IRAM_ATTR int spi_bufpos;
 								typeof(x2) value_2 = x2;\
 								if(value_1 != _value_1 || value_2 != _value_2) { _value_1 = value_1; _value_2 = value_2; y }
 
-IRAM_ATTR
-static void spi_addbuffer16(uint16_t d) {
-	uint32_t pos32 = spi_bufpos/4;
-	d = __builtin_bswap16(d);
-	//ESP_LOGI(__func__, "%d", pos32);
-	if((spi_bufpos & 3) == 0) {
-		spi_buffer[pos32] = 0;
-		spi_buffer[pos32] |= d;
-	} else {
-		spi_buffer[pos32] |= ((uint32_t)d)<<16;
 
-	}
-	spi_bufpos+=2;
-	//((uint8_t*)spi_buffer)[spi_bufpos++] = d >> 8;
-	//((uint8_t*)spi_buffer)[spi_bufpos++] = d & 0xFF;
-}
 
-IRAM_ATTR
-static void spi_sendbuffer() {
-	if(spi_task_notify_handle){
-		ESP_LOGE(__func__, "SPI handle taken");
-		return;
-	}
-
-	spi_task_notify_handle = xTaskGetCurrentTaskHandle();
-
-	spi_trans_t trans = {};
-	trans.mosi = spi_buffer;
-	trans.bits.mosi = 8 * spi_bufpos;
-	spi_trans(HSPI_HOST, &trans);
-	spi_bufpos = 0;
-
-	if(!ulTaskNotifyTake( pdTRUE, 100 )) {
-		ESP_LOGE(__func__, "SPI xfer timeout");
-	}
-}
-
-IRAM_ATTR
-static void spi_writeCommand16(uint16_t command) {
-	if(spi_bufpos) {
-		spi_command_mode = 0;
-		spi_sendbuffer();
-	}
-
-	spi_command_mode = 1;
-	spi_addbuffer16(command);
-	spi_sendbuffer();
-}
-
-IRAM_ATTR
-static void spi_writeData16(uint16_t data) {
-	spi_addbuffer16(data);
-
-	if(spi_bufpos >= 64) {
-		spi_command_mode = 0;
-		spi_sendbuffer();
-	}
-}
-
-IRAM_ATTR
-static inline void spi_flushdata() {
-	if(spi_bufpos) {
-		spi_command_mode = 0;
-		spi_sendbuffer();
-	}
-}
-
+#ifdef ESP_TFT_ILI9225
 IRAM_ATTR
 class TFT : public TFT_22_ILI9225 {
 public:
@@ -130,12 +65,12 @@ public:
 		gpio_config_t cfg = {};
 		cfg.intr_type = GPIO_INTR_DISABLE;
 		cfg.mode = GPIO_MODE_OUTPUT;
-		cfg.pin_bit_mask = BIT(GPIO_TFT_CS) | BIT(GPIO_TFT_DC) | BIT(GPIO_TFT_RST) | BIT(GPIO_TFT_LED);
+		cfg.pin_bit_mask = BIT(CONFIG_GPIO_TFT_CS) | BIT(CONFIG_GPIO_TFT_DC) | BIT(CONFIG_GPIO_TFT_RST) | BIT(CONFIG_GPIO_TFT_LED);
 		gpio_config(&cfg);
 
-		gpio_set_level(GPIO_TFT_LED, 1);
+		gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_LED, 1);
 
-		init_spi();
+		spi_init();
 
 		TFT_22_ILI9225::begin();
 	}
@@ -149,81 +84,26 @@ public:
 	}
 
 private:
-	void assertCS(bool state)  { gpio_set_level(GPIO_TFT_CS, state); }
-	void assertDC(bool state)  { gpio_set_level(GPIO_TFT_DC, state); }
-	void assertRST(bool state) { gpio_set_level(GPIO_TFT_RST, state); }
+	void assertCS(bool state)  { gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_CS, state); }
+	void assertDC(bool state)  { gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, state); }
+	void assertRST(bool state) { gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_RST, state); }
 
-	void init_spi() {
-	    spi_config_t spi_config;
-	    // Load default interface parameters
-	    // CS_EN:1, MISO_EN:1, MOSI_EN:1, BYTE_TX_ORDER:1, BYTE_TX_ORDER:1, BIT_RX_ORDER:0, BIT_TX_ORDER:0, CPHA:0, CPOL:0
-	    spi_config.interface.val = SPI_DEFAULT_INTERFACE;
-	    // Load default interrupt enable
-	    // TRANS_DONE: true, WRITE_STATUS: false, READ_STATUS: false, WRITE_BUFFER: false, READ_BUFFER: false
-	    spi_config.intr_enable.val = SPI_MASTER_DEFAULT_INTR_ENABLE;
-	    // Cancel hardware cs
-	    spi_config.interface.cs_en = 0;
-	    spi_config.interface.miso_en = 0;
-	    spi_config.interface.cpol = 1;
-	    spi_config.interface.cpha = 1;
-	    spi_config.interface.byte_tx_order = SPI_BYTE_ORDER_LSB_FIRST;
-	    spi_config.interface.bit_tx_order = SPI_BIT_ORDER_LSB_FIRST;
-	    // Set SPI to master mode
-	    // 8266 Only support half-duplex
-	    spi_config.mode = SPI_MASTER_MODE;
-	    // Set the SPI clock frequency division factor
-	    spi_config.clk_div = SPI_20MHz_DIV;
-	    // Register SPI event callback function
-	    spi_config.event_cb = spi_event_callback;
-	    spi_init(HSPI_HOST, &spi_config);
-	}
+
 
 	void startWrite() override {}
 
 	void endWrite() override {
 		spi_flushdata();
 	}
-
-
 };
-
-
-static IRAM_ATTR void spi_event_callback(int event, void *arg)
-{
-	switch (event) {
-		case SPI_INIT_EVENT: {
-		}
-		break;
-
-		case SPI_TRANS_START_EVENT: {
-		   // gpio_set_level(OLED_DC_GPIO, oled_dc_level);
-			if(spi_command_mode) {
-				gpio_set_level(GPIO_TFT_DC, 0);
-			}
-			gpio_set_level(GPIO_TFT_CS, 0);
-		}
-		break;
-
-		case SPI_TRANS_DONE_EVENT: {
-			gpio_set_level(GPIO_TFT_CS, 1);
-			gpio_set_level(GPIO_TFT_DC, 1);
-
-			BaseType_t xHigherPriorityTaskWoken = 0;
-			vTaskNotifyGiveFromISR( spi_task_notify_handle, &xHigherPriorityTaskWoken);
-			spi_task_notify_handle = 0;
-			if (xHigherPriorityTaskWoken) {
-				taskYIELD();
-			}
-		}
-		break;
-
-		case SPI_DEINIT_EVENT: {
-		}
-		break;
-	}
-}
-
 static TFT tft;
+
+#else 
+
+
+
+#endif
+
 
 #ifdef DOUBLE_BUFFER
 void IRAM_ATTR lvgl_flush_task(void* parm) {
@@ -234,8 +114,13 @@ void IRAM_ATTR lvgl_flush_task(void* parm) {
 		xQueueReceive(flush_q, &args, portMAX_DELAY);
 		//ESP_LOGI(__func__, "flush");
 		//printf("win2 x1:%d y1:%d x2:%d y2:%d %p\n", args.area.x1, args.area->y1, args.area->x2, args.area->y2, args.color_p);
-		tft._setWindow(args.area.x1, args.area.y1, args.area.x2, args.area.y2, L2R_TopDown);
 
+#ifdef CONFIG_ESP_TFT_ILI9341
+		ILI9341_setWindow(args.area.x1, args.area.y1, args.area.x2, args.area.y2);
+#elif CONFIG_ESP_TFT_ILI9225
+		tft._setWindow(args.area.x1, args.area.y1, args.area.x2, args.area.y2, L2R_TopDown);
+#endif
+		
 		int32_t x, y;
 		for(y = args.area.y1; y <= args.area.y2; y++) {
 			for(x = args.area.x1; x <= args.area.x2; x++) {
@@ -243,6 +128,7 @@ void IRAM_ATTR lvgl_flush_task(void* parm) {
 				args.color_p++;
 			}
 		}
+		spi_flushdata();
 
 		lv_disp_flush_ready(args.disp);         /* Indicate you are ready with the flushing*/
 	}
@@ -309,11 +195,16 @@ void display_setup() {
 #ifdef DOUBLE_BUFFER
 	flush_q = xQueueCreate(1, sizeof(struct flush_data));
 #endif
+	spi_init();
+
+#ifdef CONFIG_ESP_TFT_ILI9341
+	ILI9341_init();
+#elif CONFIG_ESP_TFT_ILI9225
     tft.begin();
     tft.setOrientation(3);
+#endif
 
     lv_init();
-
 
 #ifdef DOUBLE_BUFFER
     lv_disp_buf_init(&disp_buf, buf, buf2, LV_HOR_RES_MAX * 10);    /*Initialize the display buffer*/
