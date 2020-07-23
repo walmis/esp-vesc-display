@@ -18,7 +18,7 @@
 #include "lwip/mem.h"
 #include "lwip/netbuf.h"
 
-
+#include "esp_system.h"
 #include "esp_ota_ops.h"
 #include "esp_log.h"
 #include "esp_flash_partitions.h"
@@ -236,6 +236,7 @@ static void tftp_task(void *listen_port)
         if(ack_err != 0) {
             printf("OTA TFTP initial ACK failed\r\n");
             netconn_disconnect(nc);
+            netconn_delete(nc);
             continue;
         }
 
@@ -249,13 +250,22 @@ static void tftp_task(void *listen_port)
         int recv_err = tftp_receive_data(nc, &received_len, NULL, 0, NULL);
 
         netconn_disconnect(nc);
+        netconn_delete(nc);
         ESP_LOGI(TAG, "OTA TFTP receive data result %d bytes %d\r\n", recv_err, received_len);
         if(recv_err == ERR_OK) {
+            err = esp_ota_end(update_handle);
+            if(err != ESP_OK) {
+                ESP_LOGE(TAG, "esp_ota_end failed! err=0x%x", err);
+                continue;
+            }
 			err = esp_ota_set_boot_partition(update_part);
 			if (err != ESP_OK) {
 				ESP_LOGE(TAG, "esp_ota_set_boot_partition failed! err=0x%x", err);
 				continue;
 			}
+            ESP_LOGI(TAG, "Restarting...");
+
+            vTaskDelay(20);
 
 			esp_restart();
 

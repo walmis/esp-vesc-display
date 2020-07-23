@@ -151,7 +151,7 @@ void ILI9341_init() {
     gpio_config_t cfg = {};
     cfg.intr_type = GPIO_INTR_DISABLE;
     cfg.mode = GPIO_MODE_OUTPUT;
-    cfg.pin_bit_mask = BIT(CONFIG_GPIO_TFT_CS) | BIT(CONFIG_GPIO_TFT_DC) | BIT(CONFIG_GPIO_TFT_LED);
+    cfg.pin_bit_mask = BIT(CONFIG_GPIO_TFT_CS) | BIT(CONFIG_GPIO_TFT_DC);
 #if CONFIG_GPIO_TFT_LED >= 0
     cfg.pin_bit_mask |= BIT(CONFIG_GPIO_TFT_LED);
 #endif

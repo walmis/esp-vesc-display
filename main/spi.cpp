@@ -72,11 +72,9 @@ void spi_writeCommand16(uint16_t command) {
     spi_flushdata();
 
 	gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 0);
-    vTaskDelay(1);
 	spi_command_mode = 1;
 	spi_addbuffer16(command);
 	spi_sendbuffer();
-    vTaskDelay(1);
     gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 1);
 
 }
@@ -86,12 +84,8 @@ void spi_writeCommand8(uint8_t command) {
     spi_flushdata();
 
 	gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 0);
-        vTaskDelay(1);
-
 	spi_addbuffer8(command);
 	spi_sendbuffer();
-        vTaskDelay(1);
-
     gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 1);
 }
 

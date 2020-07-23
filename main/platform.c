@@ -44,6 +44,7 @@
 #include "nvs_flash.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
+#include "driver/adc.h"
 #include "esp8266/uart_register.h"
 
 #include <lwip/sockets.h>
@@ -231,8 +232,8 @@ static void do_vesc_packet_send(unsigned char *data, unsigned int len) {
 }
 
 double read_odometer() {
-	double odo;
-	nvs_get_u64(h_nvs_conf, "odometer", (uint64_t*)&odo);
+	double odo = 0;
+	ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_get_u64(h_nvs_conf, "odometer", (uint64_t*)&odo)) ;
 	if(!isnormal(odo)) {
 		return 0;
 	} else {
@@ -657,9 +658,7 @@ void app_main(void) {
 
 	vTaskPrioritySet(NULL, 3);
 
-	ESP_LOGI(__func__, "display_setup begin\n");
-	display_setup();
-	ESP_LOGI(__func__, "display_setup end\n");
+
 
 #ifdef CONFIG_ESP_VESC_STA
 	wifi_init_sta();
@@ -669,12 +668,24 @@ void app_main(void) {
 	wifi_init_softap();
 #endif
 
+	adc_config_t adc_config;
+	adc_config.mode = ADC_READ_TOUT_MODE;
+	adc_config.clk_div = 8;
+	ESP_ERROR_CHECK(adc_init(&adc_config));
+
+	uint16_t adc_data = 0;
+	ESP_ERROR_CHECK(adc_read(&adc_data));
+	printf("adc read %d\n", adc_data);
+
 	httpd_start();
 #ifdef CONFIG_ESP_VESC_UART
 	//esp_log_set_putchar(putc_remote);
 #endif
 	esp_wifi_set_ps(WIFI_PS_NONE);
 
+	ESP_LOGI(__func__, "display_setup begin\n");
+	display_setup();
+	ESP_LOGI(__func__, "display_setup end\n");
 
 	packet_init(do_vesc_packet_send, cb_packet_process, 0);
 	stored_odo = read_odometer();
