@@ -162,7 +162,7 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
         ESP_LOGE("WIFI", "Disconnect reason : %d", info->disconnected.reason);
         if (info->disconnected.reason == WIFI_REASON_BASIC_RATE_NOT_SUPPORT) {
             /*Switch to 802.11 bgn mode */
-            esp_wifi_set_protocol(ESP_IF_WIFI_STA, WIFI_PROTOCAL_11B | WIFI_PROTOCAL_11G | WIFI_PROTOCAL_11N);
+            //esp_wifi_set_protocol(ESP_IF_WIFI_STA, WIFI_PROTOCAL_11B | WIFI_PROTOCAL_11G | WIFI_PROTOCAL_11N);
         }
         esp_wifi_connect();
         //xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
@@ -175,14 +175,12 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
 
 void wifi_init_softap()
 {
-    tcpip_adapter_init();
-    ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     wifi_config_t wifi_config = {
         .ap = {
-            .password = AP_PSK,
+            .password = CONFIG_ESP_AP_PSK,
             .max_connection = 4,
             .authmode = WIFI_AUTH_WPA2_PSK
 
@@ -192,7 +190,7 @@ void wifi_init_softap()
     uint64_t chipid;
     esp_read_mac((uint8_t*)&chipid, ESP_MAC_WIFI_SOFTAP);
 
-    wifi_config.ap.ssid_len = sprintf((char*)wifi_config.ap.ssid, AP_SSID "_%X", (uint32_t)chipid);
+    wifi_config.ap.ssid_len = sprintf((char*)wifi_config.ap.ssid, CONFIG_ESP_AP_SSID "_%X", (uint32_t)chipid);
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
@@ -608,6 +606,7 @@ void vesc_net_task(void* param) {
 }
 #endif
 
+#ifdef CONFIG_ESP_VESC_STA
 void wifi_init_sta()
 {
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
@@ -628,6 +627,7 @@ void wifi_init_sta()
     ESP_LOGI(__func__, "wifi_init_sta finished.");
 
 }
+#endif
 
 void app_main(void) {
     tcpip_adapter_init();
@@ -661,14 +661,18 @@ void app_main(void) {
 	display_setup();
 	ESP_LOGI(__func__, "display_setup end\n");
 
-
-	//wifi_init_softap();
+#ifdef CONFIG_ESP_VESC_STA
 	wifi_init_sta();
+#endif
+
+#ifdef CONFIG_ESP_AP_MODE
+	wifi_init_softap();
+#endif
 
 	httpd_start();
-
-	esp_log_set_putchar(putc_remote);
-
+#ifdef CONFIG_ESP_VESC_UART
+	//esp_log_set_putchar(putc_remote);
+#endif
 	esp_wifi_set_ps(WIFI_PS_NONE);
 
 

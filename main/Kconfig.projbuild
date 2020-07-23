@@ -2,9 +2,7 @@ menu "Project Configuration"
 
 choice ESP_VESC_CONN
     prompt "Vesc Connection"
-    default ESP_WIFI_IS_SOFTAP
-    help
-        Whether the esp32 is softAP or station.
+    default ESP_VESC_STA
 
 config ESP_VESC_UART
     bool "UART"
@@ -12,25 +10,11 @@ config ESP_VESC_STA
     bool "WIFI STA"
 endchoice
 
-choice ESP_TFT
-    prompt "TFT Display type"
-    default ESP_TFT_ILI9225
-
-config ESP_TFT_ILI9225
-    bool "ILI9225 176x220"
-config ESP_TFT_ILI9341
-    bool "ILI9341 240x320"
-endchoice
-
-config DISPLAY_ROTATION
-    int "Display Rotation"
-    default 0
-
 
 if ESP_VESC_UART
 config ESP_UART_BAUD
     int "Baudrate"
-    default 115200
+    default 230400
     help
 	Vesc Connection Baudrate
 endif
@@ -50,6 +34,40 @@ config ESP_WIFI_PASSWORD
 	WiFi password (WPA or WPA2) for the example to use.
 endif
 
+if !ESP_VESC_STA
+
+config ESP_AP_MODE
+    bool "Wifi AP Bridge"
+
+if ESP_AP_MODE
+config ESP_AP_SSID
+    string "WiFi AP SSID"
+    default "ESP-VESC"
+    help
+	WiFi password (WPA or WPA2) for the example to use.
+	
+config ESP_AP_PSK
+    string "WiFi AP Password"
+    default "helloworld"
+    help
+	WiFi password (WPA or WPA2) for the example to use.
+endif
+endif
+
+choice ESP_TFT
+    prompt "TFT Display type"
+    default ESP_TFT_ILI9225
+
+config ESP_TFT_ILI9225
+    bool "ILI9225 176x220"
+config ESP_TFT_ILI9341
+    bool "ILI9341 240x320"
+endchoice
+
+config DISPLAY_ROTATION
+    int "Display Rotation"
+    default 0
+    
 config GPIO_TFT_RST
     int "TFT RST GPIO"
     default 0
@@ -69,6 +87,17 @@ config GPIO_TFT_LED
     int "TFT LED GPIO"
     default 4
 
+config LCD_TOUCH
+    bool "Use Touchscreen (XPT2046)"
 
-		
+if LCD_TOUCH
+config GPIO_TOUCH_CS
+    int "Touch CS GPIO"
+    default 5
+
+config GPIO_TOUCH_IRQ
+    int "Touch IRQ GPIO"
+    default 4
+endif
+
 endmenu

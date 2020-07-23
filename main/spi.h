@@ -16,3 +16,5 @@ void spi_writeCommand16(uint16_t command);
 void spi_sendbuffer();
 void spi_addbuffer16(uint16_t d);
 void spi_addbuffer8(uint8_t d);
+
+void spi_xfer(uint8_t* in, uint8_t* out, uint8_t len);

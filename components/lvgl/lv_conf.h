@@ -198,7 +198,7 @@ typedef void * lv_img_decoder_user_data_t;
 
 /* Attribute to mark large constant arrays for example
  * font's bitmaps */
-#define LV_ATTRIBUTE_LARGE_CONST
+#define LV_ATTRIBUTE_LARGE_CONST __attribute__((section(".irom.text")))
 
 /* Export integer constant to binding.
  * This macro is used with constants in the form of LV_<CONST> that
@@ -328,7 +328,8 @@ typedef void * lv_indev_drv_user_data_t;            /*Type of user data in the i
 #define LV_FONT_CUSTOM_DECLARE LV_FONT_DECLARE(iosevka_10) \
 								LV_FONT_DECLARE(iosevka_num) \
 								LV_FONT_DECLARE(iosevka_20) \
-								LV_FONT_DECLARE(iosevka_14)
+								LV_FONT_DECLARE(iosevka_14) \
+                LV_FONT_DECLARE(iosevka_num_60)
 
 /*Always set a default font from the built-in fonts*/
 #define LV_FONT_DEFAULT        &lv_font_roboto_16

@@ -1,6 +1,8 @@
+#pragma GCC optimize("O3")
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
+#include <string.h>
 
 
 #include "spi.h"
@@ -16,7 +18,7 @@ static IRAM_ATTR uint32_t spi_buffer[16];
 static IRAM_ATTR int spi_bufpos;
 static IRAM_ATTR void spi_event_callback(int event, void *arg);
 
-static uint8_t _cs_pin;
+static int8_t _cs_pin = -1;
 static xSemaphoreHandle _spi_lock;
 
 IRAM_ATTR
@@ -62,30 +64,35 @@ void spi_sendbuffer() {
 	if(!ulTaskNotifyTake( pdTRUE, 100 )) {
 		ESP_LOGE(__func__, "SPI xfer timeout");
 	}
+    spi_task_notify_handle = 0;
 }
 
 IRAM_ATTR
 void spi_writeCommand16(uint16_t command) {
-	if(spi_bufpos) {
-		spi_command_mode = 0;
-		spi_sendbuffer();
-	}
+    spi_flushdata();
 
+	gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 0);
+    vTaskDelay(1);
 	spi_command_mode = 1;
 	spi_addbuffer16(command);
 	spi_sendbuffer();
+    vTaskDelay(1);
+    gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 1);
+
 }
 
 IRAM_ATTR
 void spi_writeCommand8(uint8_t command) {
-	if(spi_bufpos) {
-		spi_command_mode = 0;
-		spi_sendbuffer();
-	}
+    spi_flushdata();
 
-	spi_command_mode = 1;
+	gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 0);
+        vTaskDelay(1);
+
 	spi_addbuffer8(command);
 	spi_sendbuffer();
+        vTaskDelay(1);
+
+    gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 1);
 }
 
 IRAM_ATTR
@@ -139,11 +146,56 @@ void spi_init() {
 
 void spi_beginTransaction(uint8_t cspin) {
     xSemaphoreTake(_spi_lock, portMAX_DELAY );
-    _cs_pin = cspin;
+    _cs_pin = cspin;            
+
+    if(_cs_pin == CONFIG_GPIO_TOUCH_CS) {
+        spi_clk_div_t div = SPI_2MHz_DIV;
+        spi_set_clk_div(HSPI_HOST, &div);
+    } else {
+        spi_clk_div_t div = SPI_20MHz_DIV;
+        spi_set_clk_div(HSPI_HOST, &div);
+    }
+
+    gpio_set_level((gpio_num_t)_cs_pin, 0);
+
 }
 
 void spi_endTransaction() {
+    //write remaining data if any
+    spi_flushdata();
+    
+    gpio_set_level((gpio_num_t)_cs_pin, 1);
+
+    _cs_pin = -1;
     xSemaphoreGive(_spi_lock);
+}
+
+void spi_xfer(uint8_t* in, uint8_t* out, uint8_t len) {
+    uint32_t inbuf[(len+4)/4] = {};
+    uint32_t outbuf[(len+4)/4];
+    for(int i = 0; i < len; i++) {
+        ((uint8_t*)(outbuf))[i] = out[i];
+    }
+    
+    spi_flushdata();
+
+    spi_task_notify_handle = xTaskGetCurrentTaskHandle();
+
+	spi_trans_t trans = {};
+	trans.miso = inbuf;
+	trans.bits.miso = 8 * len;
+    trans.mosi = outbuf;
+	trans.bits.mosi = 8 * len;
+	spi_trans(HSPI_HOST, &trans);
+
+	if(!ulTaskNotifyTake( pdTRUE, 100 )) {
+		ESP_LOGE(__func__, "SPI xfer timeout");
+	}
+    for(int i = 0; i < len; i++) {
+        in[i] = ((uint8_t*)(inbuf))[i];
+    }
+    //printf("snd %x rd %x\n", outbuf[0], ((uint8_t*)(inbuf))[1]);
+
 }
 
 static IRAM_ATTR void spi_event_callback(int event, void *arg)
@@ -154,17 +206,18 @@ static IRAM_ATTR void spi_event_callback(int event, void *arg)
 		break;
 
 		case SPI_TRANS_START_EVENT: {
-		   // gpio_set_level(OLED_DC_GPIO, oled_dc_level);
-			if(spi_command_mode) {
-				gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 0);
-			}
-			gpio_set_level((gpio_num_t)_cs_pin, 0);
+            //assert(_cs_pin != -1);
+			// if(spi_command_mode && _cs_pin == CONFIG_GPIO_TFT_CS) {
+			// 	gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 0);
+			// }
 		}
 		break;
 
 		case SPI_TRANS_DONE_EVENT: {
-			gpio_set_level((gpio_num_t)_cs_pin, 1);
-			gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 1);
+            // assert(_cs_pin != -1);
+            // if(_cs_pin == CONFIG_GPIO_TFT_CS) {
+			//     gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 1);
+            // }
 
 			BaseType_t xHigherPriorityTaskWoken = 0;
 			vTaskNotifyGiveFromISR( spi_task_notify_handle, &xHigherPriorityTaskWoken);
