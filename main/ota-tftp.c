@@ -9,6 +9,7 @@
 #include <FreeRTOS.h>
 #include <string.h>
 #include <strings.h>
+#include <stdio.h>
 
 #include "lwip/err.h"
 #include "lwip/api.h"
@@ -25,6 +26,15 @@
 #include "esp_image_format.h"
 
 #include "ota-tftp.h"
+
+#define DISPLAY
+#ifdef DISPLAY
+#include "display.h"
+#define SHOW_MESSAGE(fmt, ...) { char* msg; asprintf(&msg, fmt, ##__VA_ARGS__); display_show_message(msg); free(msg); }
+#else
+#define SHOW_MESSAGE(fmt, ...)
+#endif
+
 
 /* Read a 16 bit wide unsigned integer, stored host order, from the netbuf */
 inline static u16_t netbuf_read_u16_h(struct netbuf *netbuf, u16_t offs)
@@ -107,7 +117,9 @@ static int ota_tftp_init() {
 		ESP_LOGE(TAG, "update_partition not found!");
 		return ERR_VAL;
 	}
-	ESP_LOGI(TAG, "esp_ota_begin");
+    
+    SHOW_MESSAGE("Begina OTA")
+
 	err_t err = esp_ota_begin(update_part, OTA_SIZE_UNKNOWN, &update_handle);
 	if (err != ESP_OK)
 	{
@@ -264,6 +276,8 @@ static void tftp_task(void *listen_port)
 				continue;
 			}
             ESP_LOGI(TAG, "Restarting...");
+            
+            SHOW_MESSAGE("Restarting");
 
             vTaskDelay(20);
 
@@ -397,6 +411,9 @@ static err_t tftp_receive_data(struct netconn *nc, size_t *received_len, ip_addr
                 first_chunk = false;
             }
             ESP_LOGI(__func__, "block %d", block);
+
+            SHOW_MESSAGE("Writing block %d", block);
+
 			err = esp_ota_write(update_handle, chunk, chunk_len);
 			if (err != ESP_OK) {
 				ESP_LOGE(TAG, "Error: esp_ota_write failed! err=0x%x", err);

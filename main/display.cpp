@@ -46,9 +46,9 @@ static xQueueHandle flush_q;
 static SemaphoreHandle_t lvgl_mutex;
 static lv_disp_drv_t disp_drv;               /*Descriptor of a display driver*/
 static lv_disp_buf_t disp_buf;
-static lv_color_t buf[LV_HOR_RES_MAX * 10];                     /*Declare a buffer for 10 lines*/
+static lv_color_t* lv_buf_1;                     /*Declare a buffer for 10 lines*/
 #ifdef DOUBLE_BUFFER
-static lv_color_t buf2[LV_HOR_RES_MAX * 10];                     /*Declare a buffer for 10 lines*/
+static lv_color_t* lv_buf_2;                     /*Declare a buffer for 10 lines*/
 #endif
 
 
@@ -164,13 +164,22 @@ static IRAM_ATTR void lvgl_flush(lv_disp_drv_t * disp, const lv_area_t * area, l
 #endif
 
 	spi_beginTransaction(CONFIG_GPIO_TFT_CS);
-    int32_t x, y;
-    for(y = area->y1; y <= area->y2; y++) {
-        for(x = area->x1; x <= area->x2; x++) {
-        	spi_writeData16(color_p->full);
-            color_p++;
-        }
-    }
+	int count = ((area->y2-area->y1+1)*(area->x2-area->x1+1));
+	printf("send count:%d %x\n", count, uint32_t(color_p));
+
+	spi_send_aligned(color_p, count*2);
+	// while(count) {
+	// 	spi_writeData16(color_p->full);
+    //     color_p++;
+	// 	count--;
+	// }
+    // int32_t x, y;
+    // for(y = area->y1; y <= area->y2; y++) {
+    //     for(x = area->x1; x <= area->x2; x++) {
+    //     	spi_writeData16(color_p->full);
+    //      color_p++;
+    //     }
+    // }
 	spi_endTransaction();
 
     lv_disp_flush_ready(disp);         /* Indicate you are ready with the flushing*/
@@ -322,10 +331,13 @@ void display_setup() {
 
     lv_init();
 
+	lv_buf_1 = (lv_color_t*)malloc(sizeof(lv_color_t) * LV_HOR_RES_MAX * 10);
+
 #ifdef DOUBLE_BUFFER
-    lv_disp_buf_init(&disp_buf, buf, buf2, LV_HOR_RES_MAX * 10);    /*Initialize the display buffer*/
+    lv_buf_2 = (lv_color_t*)malloc(sizeof(lv_color_t) * LV_HOR_RES_MAX * 10);
+	lv_disp_buf_init(&disp_buf, lv_buf_1, lv_buf_2, LV_HOR_RES_MAX * 10);    /*Initialize the display buffer*/
 #else
-    lv_disp_buf_init(&disp_buf, buf, 0, LV_HOR_RES_MAX * 10);    /*Initialize the display buffer*/
+    lv_disp_buf_init(&disp_buf, lv_buf_1, 0, LV_HOR_RES_MAX * 10);    /*Initialize the display buffer*/
 #endif
     lv_disp_drv_init(&disp_drv);          /*Basic initialization*/
     disp_drv.flush_cb = lvgl_flush;    /*Set your driver function*/
@@ -704,13 +716,13 @@ void display_set_odo(float dist) {
 }
 
 void display_show_message(const char* message) {
-	ON_CHANGED(message, {
-		if(!message) {
-			lv_label_set_text(lbl_message, "");
-		} else {
-			lv_label_set_text_fmt(lbl_message, "#ff0000 %s#", message);
-		}
-	});
+	LVGL_LOCK();
+	if(!message) {
+		lv_label_set_text(lbl_message, "");
+	} else {
+		lv_label_set_text_fmt(lbl_message, "#ff0000 %s#", message);
+	}
+	LVGL_UNLOCK();
 }
 
 void display_set_duty(float duty) {

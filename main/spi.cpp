@@ -2,6 +2,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
+#include <algorithm>
 #include <string.h>
 
 
@@ -17,6 +18,12 @@ static volatile bool spi_command_mode = 0;
 static IRAM_ATTR uint32_t spi_buffer[16];
 static IRAM_ATTR int spi_bufpos;
 static IRAM_ATTR void spi_event_callback(int event, void *arg);
+
+struct {
+    void* ptr;
+    int size;
+    int pos;
+} user_buffer;
 
 static int8_t _cs_pin = -1;
 static xSemaphoreHandle _spi_lock;
@@ -192,6 +199,30 @@ void spi_xfer(uint8_t* in, uint8_t* out, uint8_t len) {
 
 }
 
+void spi_send_aligned(void* buffer, int size) {
+    if(user_buffer.ptr != 0) {
+        ESP_LOGE(__func__, "buffer not cleared");
+    }
+    user_buffer.ptr = buffer;
+    user_buffer.size = size;
+    user_buffer.pos = 0;
+
+    spi_task_notify_handle = xTaskGetCurrentTaskHandle();
+
+	spi_trans_t trans = {};
+    trans.mosi = (uint32_t*)buffer;
+    int to_send = std::min(size, 64);
+    user_buffer.pos += to_send;
+    user_buffer.size -= to_send;
+	trans.bits.mosi = 8 * to_send;
+	spi_trans(HSPI_HOST, &trans);
+    
+	if(!ulTaskNotifyTake( pdTRUE, 100 )) {
+		ESP_LOGE(__func__, "SPI xfer timeout");
+	}
+    spi_task_notify_handle = 0;
+}
+
 static IRAM_ATTR void spi_event_callback(int event, void *arg)
 {
 	switch (event) {
@@ -212,13 +243,30 @@ static IRAM_ATTR void spi_event_callback(int event, void *arg)
             // if(_cs_pin == CONFIG_GPIO_TFT_CS) {
 			//     gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, 1);
             // }
+            if(user_buffer.ptr) {
+                if(user_buffer.size > 0) {
+                    spi_trans_t trans = {};
+                    trans.mosi = (uint32_t*)((uint8_t*)user_buffer.ptr + user_buffer.pos);
+                    int to_send = std::min(user_buffer.size, 64);
+                    user_buffer.pos += to_send;
+                    user_buffer.size -= to_send;
+                    trans.bits.mosi = 8 * to_send;
+                    ESP_ERROR_CHECK(spi_trans(HSPI_HOST, &trans));
+                } else {
+                    //mark transfer complete
+                    user_buffer.ptr = 0;
+                }
+            }
 
-			BaseType_t xHigherPriorityTaskWoken = 0;
-			vTaskNotifyGiveFromISR( spi_task_notify_handle, &xHigherPriorityTaskWoken);
-			spi_task_notify_handle = 0;
-			if (xHigherPriorityTaskWoken) {
-				taskYIELD();
-			}
+            if(!user_buffer.ptr) {
+                //notify waiting thread transfer is complete
+                BaseType_t xHigherPriorityTaskWoken = 0;
+                vTaskNotifyGiveFromISR( spi_task_notify_handle, &xHigherPriorityTaskWoken);
+                spi_task_notify_handle = 0;
+                if (xHigherPriorityTaskWoken) {
+                    taskYIELD();
+                }
+            }
 		}
 		break;
 
