@@ -64,29 +64,41 @@ config ESP_TFT_ILI9341
     bool "ILI9341 240x320"
 endchoice
 
-config DISPLAY_ROTATION
-    int "Display Rotation"
-    default 0
-    
+
+menu "Display GPIOs"    
 config GPIO_TFT_RST
     int "TFT RST GPIO"
     default 0
-
 
 config GPIO_TFT_DC
     int "TFT DC GPIO"
     default 15
 
-
 config GPIO_TFT_CS
     int "TFT CS GPIO"
     default 2
 
-
 config GPIO_TFT_LED
     int "TFT LED GPIO"
     default 4
+endmenu
 
+config DISPLAY_ROTATION
+    int "Display Rotation"
+    default 0
+    
+menu "Button GPIOs"    
+config GPIO_BTN_UP
+    int "UP Button GPIO"
+    default -1
+config GPIO_BTN_DN
+    int "DOWN Button GPIO"
+    default -1
+config GPIO_BTN_ENT
+    int "ENTER Button GPIO"
+    default -1
+endmenu
+    
 config LCD_TOUCH
     bool "Use Touchscreen (XPT2046)"
 

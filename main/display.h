@@ -22,8 +22,22 @@ void display_set_connected(bool connected);
 void display_show_message(const char* message);
 void display_set_power_level(int8_t power_level);
 
+void display_set_brake_icon(uint8_t show);
+void display_set_cruise_icon(uint8_t show);
+
+
+void display_show_menu();
+
+void display_set_power_level_cb(void(*func)(int8_t plevel));
+void display_set_cruise_control_cb(void(*func)(uint8_t long_press));
+
 void display_run();
 void display_setup();
+
+extern int8_t g_set_power_level;
+extern uint8_t g_request_cruise_control;
+
+
 #ifdef __cplusplus
 }
 #endif

@@ -52,8 +52,8 @@
 #include "ota-tftp.h"
 
 #include "vesc/packet.h"
-#include "vesc/datatypes.h"
-#include "vesc/confgenerator.h"
+#include "vesc/datatypes_5_2.h"
+#include "vesc/confgenerator_5_2.h"
 #include "vesc/buffer.h"
 #include "mcdata.h"
 #include <errno.h>
@@ -63,15 +63,31 @@
 #include "display.h"
 #include "sdkconfig.h"
 
-#define ACCESS_POINT_MODE
-#define AP_SSID	 "blackmagic"
-#define AP_PSK	 "helloworld"
+#define MAX(a,b) (((a)>(b))?(a):(b))
+
+float clip(float val, float min, float max) {
+	if(val<min) return min;
+	if(val>max) return max;
+	return val;
+}
 
 static nvs_handle h_nvs_conf;
 static uint32_t t_last_packet;
 static xSemaphoreHandle uart_lock;
 static xQueueHandle uart_events_queue;
 static xQueueHandle dbg_queue;
+
+#ifdef CONFIG_ESP_VESC_UART
+static int tcp_serv_sock;
+static int udp_serv_sock;
+static int tcp_client_sock;
+static struct sockaddr_in udp_peer_addr;
+uint32_t uart_tx_count;
+#endif
+
+#define UART_LOCK() xSemaphoreTake(uart_lock, portMAX_DELAY)
+#define UART_UNLOCK() { uart_wait_tx_done(0, portMAX_DELAY); xSemaphoreGive(uart_lock); }
+
 
 const char*
 platform_target_voltage(void) {
@@ -120,6 +136,98 @@ void dbg_task(void *parameters) {
 
 	}
 }
+#ifdef CONFIG_ESP_VESC_UART
+void net_uart_task(void* params) {
+
+	tcp_serv_sock = socket(AF_INET, SOCK_STREAM, 0);
+	udp_serv_sock = socket(AF_INET, SOCK_DGRAM, 0);
+	tcp_client_sock = 0;
+
+	int ret;
+
+	struct sockaddr_in saddr;
+	saddr.sin_addr.s_addr = 0;
+	saddr.sin_port = ntohs(23);
+	saddr.sin_family = AF_INET;
+
+	bind(tcp_serv_sock, (struct sockaddr*)&saddr, sizeof(saddr));
+
+	saddr.sin_addr.s_addr = 0;
+	saddr.sin_port = ntohs(2323);
+	saddr.sin_family = AF_INET;
+	bind(udp_serv_sock, (struct sockaddr*)&saddr, sizeof(saddr));
+	listen(tcp_serv_sock, 1);
+
+	while(1) {
+		fd_set fds;
+		struct timeval tv;
+		tv.tv_sec = 1;
+		tv.tv_usec = 0;
+
+		FD_ZERO(&fds);
+		FD_SET(tcp_serv_sock, &fds);
+		FD_SET(udp_serv_sock, &fds);
+		if(tcp_client_sock)
+			FD_SET(tcp_client_sock, &fds);
+
+		int maxfd = MAX(tcp_serv_sock, MAX(udp_serv_sock, tcp_client_sock));
+
+		if((ret = select(maxfd+1, &fds, NULL, NULL, &tv) > 0))
+		{
+			if(FD_ISSET(tcp_serv_sock, &fds)) {
+				tcp_client_sock = accept(tcp_serv_sock, 0, 0);
+				if(tcp_client_sock < 0) {
+					ESP_LOGE(__func__, "accept() failed");
+					tcp_client_sock = 0;
+				} else {
+					ESP_LOGI(__func__, "accepted tcp connection");
+
+					int opt = 1; /* SO_KEEPALIVE */
+			        setsockopt(tcp_client_sock, SOL_SOCKET, SO_KEEPALIVE, (void *)&opt, sizeof(opt));
+			        opt = 3; /* s TCP_KEEPIDLE */
+			        setsockopt(tcp_client_sock, IPPROTO_TCP, TCP_KEEPIDLE, (void*)&opt, sizeof(opt));
+			        opt = 1; /* s TCP_KEEPINTVL */
+			        setsockopt(tcp_client_sock, IPPROTO_TCP, TCP_KEEPINTVL, (void *)&opt, sizeof(opt));
+			        opt = 3; /* TCP_KEEPCNT */
+			        setsockopt(tcp_client_sock, IPPROTO_TCP, TCP_KEEPCNT, (void *)&opt, sizeof(opt));
+			        opt = 1;
+			        setsockopt(tcp_client_sock, IPPROTO_TCP, TCP_NODELAY, (void *)&opt, sizeof(opt));
+
+				}
+			}
+			uint8_t buf[128];
+
+			if(FD_ISSET(udp_serv_sock, &fds)) {
+				socklen_t slen = sizeof(udp_peer_addr);
+				ret = recvfrom(udp_serv_sock, buf, sizeof(buf), 0, (struct sockaddr*)&udp_peer_addr, &slen);
+				if(ret > 0) {
+					UART_LOCK();
+					uart_write_bytes(0, (const char*)buf, ret);
+					UART_UNLOCK();
+					uart_tx_count += ret;
+				} else {
+					ESP_LOGE(__func__, "udp recvfrom() failed");
+				}
+			}
+
+			if(tcp_client_sock && FD_ISSET(tcp_client_sock, &fds)) {
+				ret = recv(tcp_client_sock, buf, sizeof(buf), MSG_DONTWAIT);
+				if(ret > 0) {
+					UART_LOCK();
+					uart_write_bytes(0, (const char*)buf, ret);
+					UART_UNLOCK();
+					uart_tx_count += ret;
+				} else {
+					ESP_LOGE(__func__, "tcp client recv() failed (%s)", strerror(errno));
+					close(tcp_client_sock);
+					tcp_client_sock = 0;
+				}
+			}
+		}
+	}
+
+}
+#endif
 
 void debug_putc(char c, int flush) {
 	if(dbg_queue) {
@@ -174,6 +282,7 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
     return ESP_OK;
 }
 
+#ifdef CONFIG_ESP_AP_MODE
 void wifi_init_softap()
 {
 
@@ -197,8 +306,7 @@ void wifi_init_softap()
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
 }
-
-
+#endif
 
 int putc_noop(int c) {
 	return c;
@@ -217,8 +325,9 @@ int g_vesc_sock;
 
 static void do_vesc_packet_send(unsigned char *data, unsigned int len) {
 #ifdef CONFIG_ESP_VESC_UART
+	UART_LOCK();
 	uart_write_bytes(0, (const char*)data, len);
-	uart_wait_tx_done(0, 10000);
+	UART_UNLOCK();
 #else
 	if(g_vesc_sock != 0) {
 		int ret = send(g_vesc_sock, data, len, MSG_DONTWAIT);
@@ -233,7 +342,8 @@ static void do_vesc_packet_send(unsigned char *data, unsigned int len) {
 
 double read_odometer() {
 	double odo = 0;
-	ESP_ERROR_CHECK_WITHOUT_ABORT(nvs_get_u64(h_nvs_conf, "odometer", (uint64_t*)&odo)) ;
+	size_t length = sizeof(odo);
+	nvs_get_blob(h_nvs_conf, "odometer", (void*)&odo, &length);
 	if(!isnormal(odo)) {
 		return 0;
 	} else {
@@ -242,9 +352,7 @@ double read_odometer() {
 }
 
 esp_err_t store_odometer(double val) {
-	uint64_t tmp;
-	memcpy(&tmp, &val, sizeof(val));
-	return nvs_set_u64(h_nvs_conf, "odometer", tmp);
+	return nvs_set_blob(h_nvs_conf, "odometer", (void*)&val, sizeof(val));
 }
 
 struct mc_data mc_data;
@@ -293,7 +401,7 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
 	switch(data[0]) {
 	case COMM_GET_MCCONF:
 	{
-		if(!confgenerator_deserialize_mcconf(data+1, &mcconf)) {
+		if(!confgenerator_deserialize_mcconf(++data, &mcconf)) {
 			ESP_LOGE(__func__, "Failed to deserialize mcconf, wrong signature?");
 		} else {
 
@@ -319,7 +427,6 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         if (data[0] == COMM_GET_VALUES_SELECTIVE) {
             mask = buffer_get_uint32(data, &idx);
         }
-
 
         if (mask & ((1) << 0)) {
         	mc_data.temp_mos = buffer_get_float16(data, 1e1, &idx);
@@ -375,16 +482,16 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         	DBG_PRINT_VAL(mc_data.watt_hours_charged);
         }
         if (mask & ((1) << 13)) {
-        	mc_data.tachometer = buffer_get_int32(data, &idx);
+			if(mc_data.tachometer == 0) {
+				g_initial_tach = buffer_get_int32(data, &idx);
+				mc_data.tachometer = g_initial_tach;
+			} else {
+        		mc_data.tachometer = buffer_get_int32(data, &idx);
+			}
         	DBG_PRINT_VAL(mc_data.tachometer);
         }
         if (mask & ((1) << 14)) {
-        	if(mc_data.tachometer_abs == 0) {
-        		g_initial_tach = buffer_get_int32(data, &idx);
-            	mc_data.tachometer_abs = g_initial_tach;
-        	} else {
-        		mc_data.tachometer_abs = buffer_get_int32(data, &idx);
-        	}
+        	mc_data.tachometer_abs = buffer_get_int32(data, &idx);
         	DBG_PRINT_VAL(mc_data.tachometer_abs);
         }
         if (mask & ((1) << 15)) {
@@ -436,16 +543,27 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
             }
         }
 
-        display_set_duty(mc_data.duty_now);
+		static float currrent_motor_filt;
+		static float duty_now_filt;
+		static float v_in_filt;
+		static float curr_in_filt;
+
+		currrent_motor_filt = currrent_motor_filt*0.9f + mc_data.current_motor * 0.1f;
+		duty_now_filt = duty_now_filt*0.9f + mc_data.duty_now * 0.1f;
+		v_in_filt = v_in_filt*0.9f + mc_data.v_in*0.1f;
+		curr_in_filt = curr_in_filt*0.9f + mc_data.current_in*0.1f;
+
+        display_set_duty(duty_now_filt);
         display_set_mos_temp(mc_data.temp_mos);
         display_set_curr_power(mc_data.current_in * mc_data.v_in);
-        display_set_bat_info(mc_data.v_in, mc_data.current_in);
-        display_set_mot_current(mc_data.current_motor);
+        display_set_bat_info(v_in_filt, curr_in_filt);
+		
+        display_set_mot_current(currrent_motor_filt);
         display_set_energy(mc_data.amp_hours_charged, mc_data.amp_hours);
 
         float tach_ratio = (((1.0f * mcconf.si_gear_ratio) / (mcconf.si_motor_poles * 3.0f)) * (mcconf.si_wheel_diameter * M_PI)) / 1000.0f;
 
-        float trip_km = mc_data.tachometer_abs * tach_ratio;
+        float trip_km = mc_data.tachometer * tach_ratio;
         display_set_trip(trip_km);
 
         static uint32_t trip_time_ms;
@@ -458,27 +576,29 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
 
         	display_set_triptime(trip_time_ms);
 
-        	float trip_km = (mc_data.tachometer_abs - g_initial_tach) * tach_ratio;
+        	float trip_km = (mc_data.tachometer - g_initial_tach) * tach_ratio;
         	//ESP_LOGI(__func__, "trip rel %f %f", trip_km, (((float)trip_time_ms/1000.0f)/3600.0f));
-        	display_set_avgspeed(trip_km / (((float)trip_time_ms/1000.0f)/3600.0f));
+			if(trip_time_ms != 0)
+        		display_set_avgspeed(trip_km / (((float)trip_time_ms/1000.0f)/3600.0f));
         }
 
         prev_trip_timestamp = platform_time_ms();
-
-        float speedFact = ((mcconf.si_motor_poles / 2.0f) * 60.0f *	mcconf.si_gear_ratio) / (mcconf.si_wheel_diameter * M_PI);
-        display_set_speed(mc_data.rpm / speedFact * 3.6);
+		if(mcconf.si_wheel_diameter != 0) {
+        	float speedFact = ((mcconf.si_motor_poles / 2.0f) * 60.0f *	mcconf.si_gear_ratio) / (mcconf.si_wheel_diameter * M_PI);
+        	display_set_speed(mc_data.rpm / speedFact * 3.6f);
+		}
 
 
         if(prev_odo == 0) {
-        	prev_odo = mc_data.tachometer_abs;
+        	prev_odo = mc_data.tachometer;
         } else {
         	if( mcconf.si_gear_ratio != 0 && mcconf.si_motor_poles != 0) {
-        		int diff = (mc_data.tachometer_abs - prev_odo);
+        		int diff = (mc_data.tachometer - prev_odo);
         		if(diff > 0) {
         			stored_odo += (double)diff * tach_ratio;
         		}
         	}
-        	prev_odo = mc_data.tachometer_abs;
+        	prev_odo = mc_data.tachometer;
         }
         display_set_odo(stored_odo);
 
@@ -499,6 +619,27 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
 	}
 }
 
+void set_current_brake_rel(float current_rel) {
+	current_rel = clip(current_rel, 0, 1);
+	float min_current = mcconf.l_current_min;
+	float current = fabsf(current_rel * min_current);
+	uint8_t buffer[5];
+	buffer[0] = COMM_SET_CURRENT_BRAKE;
+	int32_t index = 1;
+	buffer_append_int32(buffer, current*1000.0f, &index);
+
+	packet_send_packet(buffer, index, 0);
+}
+
+void set_current_rel(float current_rel) {
+	uint8_t buffer[5];
+	buffer[0] = COMM_SET_CURRENT_REL;
+	int32_t index = 1;
+	buffer_append_float32(buffer, current_rel, 1e5, &index);
+
+	packet_send_packet(buffer, index, 0);
+}
+
 void vesc_poll_data() {
 	display_set_connected(0);
 
@@ -507,6 +648,8 @@ void vesc_poll_data() {
 
 	req = COMM_GET_VALUES;
 	packet_send_packet(&req, 1, 0);
+
+	//printf("heap %d\n", esp_get_free_heap_size());
 }
 
 #ifdef CONFIG_ESP_VESC_UART
@@ -614,8 +757,8 @@ void wifi_init_sta()
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     wifi_config_t wifi_config = {
         .sta = {
-            .ssid = "blackmagic_27FCF5E",
-            .password = "helloworld"
+            .ssid = CONFIG_ESP_WIFI_SSID,
+            .password = CONFIG_ESP_WIFI_PASSWORD
         },
     };
 
@@ -630,9 +773,19 @@ void wifi_init_sta()
 }
 #endif
 
+void on_cruise_control_request(uint8_t long_press) {
+
+}
+
+void on_power_limit_request(int8_t plimit) {
+
+}
+
 void app_main(void) {
     tcpip_adapter_init();
     ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL) );
+
+	uart_lock = xSemaphoreCreateMutex();
 
 	//esp_log_set_putchar(putc_noop);
 
@@ -691,12 +844,15 @@ void app_main(void) {
 	stored_odo = read_odometer();
 	display_set_odo(stored_odo);
 
+	display_set_cruise_control_cb(on_cruise_control_request);
+	display_set_power_level_cb(on_power_limit_request);
+
 #ifdef CONFIG_ESP_VESC_UART
 	xTaskCreate(&vesc_uart_task, "vesc_uart", 1500, NULL, 3, NULL);
+	xTaskCreate(&net_uart_task, "net_uart_task", 1500, NULL, 3, NULL);
 #else
 	xTaskCreate(&vesc_net_task, "vesc_net", 1500, NULL, 3, NULL);
 #endif
-	//xTaskCreate(&uart_rx_task, "io_main", 2048, NULL, 3, NULL);
 
 	ota_tftp_init_server(69, 7);
 

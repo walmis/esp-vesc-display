@@ -3,13 +3,14 @@
 #ifndef CONFGENERATOR_H_
 #define CONFGENERATOR_H_
 
-#include "datatypes.h"
+#include "datatypes_5_2.h"
 #include <stdint.h>
 #include <stdbool.h>
 
+//vesc 5.2
 // Constants
-#define MCCONF_SIGNATURE		793836781
-#define APPCONF_SIGNATURE		783041200
+#define MCCONF_SIGNATURE		3698540221
+#define APPCONF_SIGNATURE		2460147246
 
 // Functions
 int32_t confgenerator_serialize_mcconf(uint8_t *buffer, const mc_configuration *conf);

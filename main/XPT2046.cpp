@@ -8,6 +8,9 @@
  * WITHOUT WARRANTY OF ANY KIND, either express or implied.
  */
 
+
+#ifdef CONFIG_LCD_TOUCH
+
 #include "XPT2046.h"
 #include "spi.h"
 
@@ -200,3 +203,5 @@ void XPT2046::powerDown() const {
   spi_addbuffer8(0);
   spi_endTransaction();
 }
+
+#endif

@@ -125,7 +125,7 @@ CgiStatus cgi_status(HttpdConnData *connData) {
       TaskStatus_t* tsk = &pxTaskStatusArray[i];
 
       len = snprintf(buff, sizeof(buff), "\t{\"id\": %u, \"name\": %s, \"prio\": %u, \"state\": %d, \"stack_hwm\": %u, \"cpu\": \"%u%%\" },\n",
-          tsk->xTaskNumber, tsk->pcTaskName, tsk->uxCurrentPriority, tsk->eCurrentState, tsk->usStackHighWaterMark, tsk->ulRunTimeCounter / total_runtime);
+          (uint32_t)tsk->xTaskNumber, tsk->pcTaskName, (uint32_t)tsk->uxCurrentPriority, tsk->eCurrentState, (uint32_t)tsk->usStackHighWaterMark, (uint32_t)(tsk->ulRunTimeCounter / total_runtime));
 
 
       httpdSend(connData, buff, len);

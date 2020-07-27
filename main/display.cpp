@@ -11,8 +11,13 @@
 #include "sdkconfig.h"
 #include <lvgl.h>
 #include "ILI9341.h"
+#include "ILI9225.h"
 #include "spi.h"
 #include "display.h"
+#include <math.h>
+
+LV_IMG_DECLARE(brake);
+LV_IMG_DECLARE(cruise_control_img);
 
 #ifdef CONFIG_LCD_TOUCH
 #include "XPT2046.h"
@@ -24,14 +29,11 @@ lv_indev_t * touch_indev;
 
 #endif
 
-//#define GPIO_TFT_LED (gpio_num_t)4
-//#define GPIO_TFT_RST (gpio_num_t)0
-//#define GPIO_TFT_DC  (gpio_num_t)15
-//#define GPIO_TFT_CS  (gpio_num_t)2
+lv_indev_drv_t btn_indev_drv;
+lv_indev_t* btn_indev;
+
 
 //#define DOUBLE_BUFFER
-
-#include "TFT_22_ILI9225.h"
 
 #ifdef DOUBLE_BUFFER
 struct flush_data {
@@ -52,8 +54,6 @@ static lv_color_t* lv_buf_2;                     /*Declare a buffer for 10 lines
 #endif
 
 
-
-
 #define LVGL_LOCK()   xSemaphoreTakeRecursive(lvgl_mutex, portMAX_DELAY );
 #define LVGL_UNLOCK() xSemaphoreGiveRecursive(lvgl_mutex );
 
@@ -64,56 +64,6 @@ static lv_color_t* lv_buf_2;                     /*Declare a buffer for 10 lines
 								typeof(x1) value_1 = x1;\
 								typeof(x2) value_2 = x2;\
 								if(value_1 != _value_1 || value_2 != _value_2) { _value_1 = value_1; _value_2 = value_2; y }
-
-
-
-#ifdef ESP_TFT_ILI9225
-IRAM_ATTR
-class TFT : public TFT_22_ILI9225 {
-public:
-
-	void begin() {
-		gpio_config_t cfg = {};
-		cfg.intr_type = GPIO_INTR_DISABLE;
-		cfg.mode = GPIO_MODE_OUTPUT;
-		cfg.pin_bit_mask = BIT(CONFIG_GPIO_TFT_CS) | BIT(CONFIG_GPIO_TFT_DC) | BIT(CONFIG_GPIO_TFT_RST) | BIT(CONFIG_GPIO_TFT_LED);
-		gpio_config(&cfg);
-
-		gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_LED, 1);
-
-		spi_init();
-
-		TFT_22_ILI9225::begin();
-	}
-
-	void _writeCommand16(uint16_t command) {
-		spi_writeCommand16(command);
-	}
-
-	void _writeData16(uint16_t data) {
-		spi_writeData16(data);
-	}
-
-private:
-	void assertCS(bool state)  { gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_CS, state); }
-	void assertDC(bool state)  { gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_DC, state); }
-	void assertRST(bool state) { gpio_set_level((gpio_num_t)CONFIG_GPIO_TFT_RST, state); }
-
-
-
-	void startWrite() override {}
-
-	void endWrite() override {
-		spi_flushdata();
-	}
-};
-static TFT tft;
-
-#else 
-
-
-
-#endif
 
 
 #ifdef DOUBLE_BUFFER
@@ -131,14 +81,12 @@ void IRAM_ATTR lvgl_flush_task(void* parm) {
 #elif CONFIG_ESP_TFT_ILI9225
 		tft._setWindow(args.area.x1, args.area.y1, args.area.x2, args.area.y2, L2R_TopDown);
 #endif
+
 		spi_beginTransaction(CONFIG_GPIO_TFT_CS);
-		int32_t x, y;
-		for(y = args.area.y1; y <= args.area.y2; y++) {
-			for(x = args.area.x1; x <= args.area.x2; x++) {
-				spi_writeData16(args.color_p->full);
-				args.color_p++;
-			}
-		}
+
+		int count = ((args.area.y2-args.area.y1+1)*(args.area.x2-args.area.x1+1));
+		spi_send_aligned(args.color_p, count*sizeof(lv_color_t));
+
 		spi_endTransaction();
 
 		lv_disp_flush_ready(args.disp);         /* Indicate you are ready with the flushing*/
@@ -160,26 +108,15 @@ static IRAM_ATTR void lvgl_flush(lv_disp_drv_t * disp, const lv_area_t * area, l
 	//printf("flush %d %d %d %d\n", area->x1, area->y1, area->x2, area->y2);
 	ILI9341_setWindow(area->x1, area->y1, area->x2, area->y2);
 #elif CONFIG_ESP_TFT_ILI9225
-		tft._setWindow(args.area.x1, args.area.y1, args.area.x2, args.area.y2, L2R_TopDown);
+	ILI9225_setWindow(area->x1, area->y1, area->x2, area->y2);
 #endif
 
 	spi_beginTransaction(CONFIG_GPIO_TFT_CS);
 	int count = ((area->y2-area->y1+1)*(area->x2-area->x1+1));
-	printf("send count:%d %x\n", count, uint32_t(color_p));
+	//printf("send count:%d %x\n", count, uint32_t(color_p));
 
-	spi_send_aligned(color_p, count*2);
-	// while(count) {
-	// 	spi_writeData16(color_p->full);
-    //     color_p++;
-	// 	count--;
-	// }
-    // int32_t x, y;
-    // for(y = area->y1; y <= area->y2; y++) {
-    //     for(x = area->x1; x <= area->x2; x++) {
-    //     	spi_writeData16(color_p->full);
-    //      color_p++;
-    //     }
-    // }
+	spi_send_aligned(color_p, count*sizeof(lv_color_t));
+
 	spi_endTransaction();
 
     lv_disp_flush_ready(disp);         /* Indicate you are ready with the flushing*/
@@ -209,7 +146,6 @@ bool touch_read_cb(lv_indev_drv_t * drv, lv_indev_data_t* data)
 }
 #endif
 
-
 void monitor_cb(struct _disp_drv_t * disp_drv, uint32_t time, uint32_t px) {
 	ESP_LOGI(__func__, "refreshed %dpx in %dms", px, time);
 }
@@ -218,6 +154,8 @@ extern "C"
 void vApplicationTickHook() {
 	lv_tick_inc(portTICK_PERIOD_MS);
 }
+
+static lv_group_t* ctrl_group;
 
 static lv_obj_t *bar_power;
 static lv_obj_t* lbl_speed;
@@ -244,6 +182,12 @@ static lv_style_t font_28_style;
 static lv_style_t medium_text_style;
 static lv_style_t font_mono_small;
 static lv_style_t font_10_style;
+
+static void(*cruise_control_func)(uint8_t long_press);
+static void(*power_lvl_changed_fn)(int8_t level);
+
+static lv_obj_t* brake_icon ;
+static lv_obj_t* cruise_control_icon;
 
 int8_t g_set_power_level = 3;
 
@@ -277,11 +221,11 @@ void make_power_label(char* buf, int level) {
 	for(int i = -4; i <= 4; i++) {
 		if(i < 0) {
 			if(i < level ) {
-				const char str[] = "#CCCCCC " LV_SYMBOL_STOP "# ";
+				const char str[] = "#EECCCC " LV_SYMBOL_STOP "#";
 				strcpy(buf, str);
 				buf+= strlen(str);
 			} else{ 
-				const char str[] =  LV_SYMBOL_STOP " ";
+				const char str[] =  "#EE1010 " LV_SYMBOL_STOP "#";
 				strcpy(buf, str);
 				buf+= strlen(str);
 			}
@@ -289,11 +233,11 @@ void make_power_label(char* buf, int level) {
 		} else if(i > 0) {
 			
 			if(i > level && i != 0) {
-				const char str[] = "#CCCCCC " LV_SYMBOL_STOP "# ";
+				const char str[] = "#CCEECC " LV_SYMBOL_STOP "#";
 				strcpy(buf, str);
 				buf+= strlen(str);
 			} else {
-				const char str[] = LV_SYMBOL_STOP " ";
+				const char str[] = "#10EE10 " LV_SYMBOL_STOP "#";
 				strcpy(buf, str);
 				buf+= strlen(str);
 			}
@@ -305,6 +249,9 @@ void make_power_label(char* buf, int level) {
 		}
 	}
 }
+
+extern "C" void set_current_rel(float current_rel);
+extern "C" void set_current_brake_rel(float current_rel);
 
 extern "C"
 void display_setup() {
@@ -323,8 +270,7 @@ void display_setup() {
 #ifdef CONFIG_ESP_TFT_ILI9341
 	ILI9341_init();
 #elif CONFIG_ESP_TFT_ILI9225
-    tft.begin();
-    tft.setOrientation(3);
+	ILI9225_init();
 #else
 #error "Unknown LCD"
 #endif
@@ -353,6 +299,70 @@ void display_setup() {
 	touch_indev = lv_indev_drv_register(&indev_drv);
 #endif
 
+#if CONFIG_GPIO_BTN_UP>=0 && CONFIG_GPIO_BTN_DN>=0 && CONFIG_GPIO_BTN_ENT>=0
+	gpio_config_t cfg = {};
+	cfg.mode = GPIO_MODE_INPUT;
+	cfg.pin_bit_mask = BIT(CONFIG_GPIO_BTN_UP) | BIT(CONFIG_GPIO_BTN_DN) | BIT(CONFIG_GPIO_BTN_ENT);
+	cfg.pull_up_en = GPIO_PULLUP_ENABLE;
+	gpio_config(&cfg);
+
+	lv_indev_drv_init(&btn_indev_drv);      
+	btn_indev_drv.type = LV_INDEV_TYPE_ENCODER;           
+	btn_indev_drv.read_cb =  [](lv_indev_drv_t * drv, lv_indev_data_t* data) {
+		static bool prev_states[3];
+		static uint32_t time_pressed;
+
+		if(gpio_get_level((gpio_num_t)CONFIG_GPIO_BTN_UP) != prev_states[0]) {
+			//ESP_LOGI(__func__, "up");
+			prev_states[0] = gpio_get_level((gpio_num_t)CONFIG_GPIO_BTN_UP);
+
+			if(prev_states[0] == 0) {
+				data->enc_diff = 1;
+				if(!ctrl_group) {
+					display_set_power_level(g_set_power_level+1);
+				}
+			}
+		}
+
+		if(gpio_get_level((gpio_num_t)CONFIG_GPIO_BTN_DN) != prev_states[1]) {
+			//ESP_LOGI(__func__, "dn");
+			prev_states[1] = gpio_get_level((gpio_num_t)CONFIG_GPIO_BTN_DN);
+			
+			if(prev_states[1] == 0) {
+				data->enc_diff = -1;
+				if(!ctrl_group) {
+					display_set_power_level(g_set_power_level-1);
+				}
+			}
+		}
+
+		if(gpio_get_level((gpio_num_t)CONFIG_GPIO_BTN_ENT) == 0 ) {
+			data->state = LV_BTN_STATE_PR;
+			if(!ctrl_group) {
+				if(time_pressed == 0) {
+					time_pressed = lv_tick_get();
+					if(cruise_control_func)
+						cruise_control_func(false);
+				}
+				if(time_pressed != 1 && lv_tick_get() - time_pressed > 1000) {
+					ESP_LOGI("event", "CC action");
+					if(cruise_control_func) 
+						cruise_control_func(true);
+					time_pressed = 1;
+				}
+			}
+		} else {
+			data->state = LV_BTN_STATE_REL;
+			time_pressed = 0;
+		}
+
+		return false; /*No buffering now so no more data read*/
+	}; 
+
+	/*Register the driver in LittlevGL and save the created input device object*/
+	btn_indev = lv_indev_drv_register(&btn_indev_drv);
+#endif
+
     theme = lv_theme_material_init(0, NULL);
     //theme = lv_theme_material_init(20, 0);
 	//theme = lv_theme_alien_init(0, 0);
@@ -360,16 +370,18 @@ void display_setup() {
 
 	fonts_init();
 
-	lv_obj_t* top_layer = lv_disp_get_layer_top(disp);
-    lv_obj_set_style(top_layer, theme->style.scr);
+	//lv_obj_t* main_layer = lv_disp_get_layer_top(disp);
+	lv_obj_t* screen = lv_obj_create(NULL, NULL);
+	lv_scr_load(screen); 
+    //lv_obj_set_style(screen, theme->style.scr);
+#ifdef CONFIG_ESP_TFT_ILI9341
+	screen = lv_obj_create(screen, 0);
+	lv_obj_set_size(screen, 320, 176);
+    lv_obj_align(screen, NULL, LV_ALIGN_IN_TOP_MID, 0, 0);
+	lv_obj_set_style(screen, theme->style.scr);
+#endif
 
-	top_layer = lv_obj_create(top_layer, 0);
-	lv_obj_set_size(top_layer, 320, 176);
-    lv_obj_align(top_layer, NULL, LV_ALIGN_IN_TOP_MID, 0, 0);
-
-    lv_obj_set_style(top_layer, theme->style.scr);
-
-    lbl_speed = lv_label_create(top_layer, NULL);
+    lbl_speed = lv_label_create(screen, NULL);
 
 	lv_theme_get_current()->style.cont->body.padding.bottom = 2;
 	lv_theme_get_current()->style.cont->body.padding.top = 2;
@@ -384,19 +396,19 @@ void display_setup() {
     lv_label_set_text(lbl_speed, "00");
     lv_obj_align(lbl_speed, NULL, LV_ALIGN_CENTER, 0, 0);
 
-    lv_obj_t* lbl_kmh = lv_label_create(top_layer, NULL);
+    lv_obj_t* lbl_kmh = lv_label_create(screen, NULL);
     //lv_label_set_style(lbl, LV_LABEL_STYLE_MAIN, &font_test_style);
     lv_label_set_text(lbl_kmh, "km/h");
     lv_obj_align(lbl_kmh, lbl_speed, LV_ALIGN_OUT_BOTTOM_MID, 0, 0);
 
-    bar_power = lv_bar_create(top_layer, NULL);
+    bar_power = lv_bar_create(screen, NULL);
     lv_obj_set_height(bar_power, 10);
     lv_bar_set_range(bar_power, -100, 100);
     lv_bar_set_value(bar_power, 0, 0);
     lv_bar_set_sym(bar_power, true);
     lv_obj_align(bar_power, lbl_kmh, LV_ALIGN_OUT_BOTTOM_MID, 0, 0);
 
-    lmeter = lv_lmeter_create(top_layer, NULL);
+    lmeter = lv_lmeter_create(screen, NULL);
     lv_lmeter_set_range(lmeter, 0, 50);
     lv_obj_set_height(lmeter, 120);
     lv_obj_set_width(lmeter, 100);
@@ -410,50 +422,50 @@ void display_setup() {
 
 	});
 
-    {
-    	lv_obj_t* cont = lv_cont_create(top_layer, 0);
-		//lv_obj_set_drag(cont, true);
-		lv_cont_set_fit(cont, LV_FIT_TIGHT);
-		//lv_obj_set_style(cont, &cont_style);
+    
+	lv_obj_t* odo_container = lv_cont_create(screen, 0);
+	//lv_obj_set_drag(cont, true);
+	lv_cont_set_fit(odo_container, LV_FIT_TIGHT);
+	//lv_obj_set_style(cont, &cont_style);
 
-		lbl_func = lv_label_create(cont, NULL);
-		//lv_label_set_style(lbl_func, LV_LABEL_STYLE_MAIN, &font_22_style);
-		lv_label_set_text(lbl_func, "ODO");
-		lv_obj_align(lbl_func, NULL, LV_ALIGN_IN_BOTTOM_LEFT, 2, -2);
+	lbl_func = lv_label_create(odo_container, NULL);
+	//lv_label_set_style(lbl_func, LV_LABEL_STYLE_MAIN, &font_22_style);
+	lv_label_set_text(lbl_func, "ODO");
+	lv_obj_align(lbl_func, NULL, LV_ALIGN_IN_BOTTOM_LEFT, 2, -2);
 
-		lbl_odo = lv_label_create(cont, NULL);
-		lv_label_set_style(lbl_odo, LV_LABEL_STYLE_MAIN, &medium_text_style);
-		lv_label_set_text(lbl_odo, "00000");
-		lv_obj_align(lbl_odo, lbl_func, LV_ALIGN_OUT_RIGHT_MID, 2, 0);
+	lbl_odo = lv_label_create(odo_container, NULL);
+	lv_label_set_style(lbl_odo, LV_LABEL_STYLE_MAIN, &medium_text_style);
+	lv_label_set_text(lbl_odo, "00000");
+	lv_obj_align(lbl_odo, lbl_func, LV_ALIGN_OUT_RIGHT_MID, 2, 0);
 
-		//lv_cont_set_style(cont, LV_CONT_STYLE_MAIN, theme->style.label.prim);
-		lv_cont_set_layout(cont, LV_LAYOUT_ROW_M);
-		lv_cont_set_fit2(cont, LV_FIT_TIGHT, LV_FIT_TIGHT);
-		lv_obj_align(cont, 0, LV_ALIGN_IN_BOTTOM_LEFT, 2, -2);
-		lv_obj_set_auto_realign(cont, 1);
-    }
+	//lv_cont_set_style(cont, LV_CONT_STYLE_MAIN, theme->style.label.prim);
+	lv_cont_set_layout(odo_container, LV_LAYOUT_ROW_M);
+	lv_cont_set_fit2(odo_container, LV_FIT_TIGHT, LV_FIT_TIGHT);
+	lv_obj_align(odo_container, 0, LV_ALIGN_IN_BOTTOM_LEFT, 2, -2);
+	lv_obj_set_auto_realign(odo_container, 1);
+    
 
-    {
-    	lv_obj_t* cont = lv_cont_create(top_layer, 0);
-		//lv_obj_set_style(cont, &cont_style);
-		lv_cont_set_fit(cont, LV_FIT_TIGHT);
+    
+	lv_obj_t* trp_info_container = lv_cont_create(screen, 0);
+	//lv_obj_set_style(cont, &cont_style);
+	lv_cont_set_fit(trp_info_container, LV_FIT_TIGHT);
 
-		lbl_trip = lv_label_create(cont, NULL);
-		//lv_label_set_style(lbl_func, LV_LABEL_STYLE_MAIN, &font_22_style);
-		lv_label_set_text(lbl_trip, "TRP");
+	lbl_trip = lv_label_create(trp_info_container, NULL);
+	//lv_label_set_style(lbl_func, LV_LABEL_STYLE_MAIN, &font_22_style);
+	lv_label_set_text(lbl_trip, "TRP");
 
-		lbl_trip_val = lv_label_create(cont, NULL);
-		lv_label_set_style(lbl_trip_val, LV_LABEL_STYLE_MAIN, &medium_text_style);
-		lv_label_set_text(lbl_trip_val, "0.00");
-		//lv_obj_align(lbl_trip_val, 0, LV_ALIGN_IN_BOTTOM_RIGHT, -2, 0);
+	lbl_trip_val = lv_label_create(trp_info_container, NULL);
+	lv_label_set_style(lbl_trip_val, LV_LABEL_STYLE_MAIN, &medium_text_style);
+	lv_label_set_text(lbl_trip_val, "0.00");
+	//lv_obj_align(lbl_trip_val, 0, LV_ALIGN_IN_BOTTOM_RIGHT, -2, 0);
 
-		//lv_cont_set_style(cont, LV_CONT_STYLE_MAIN, theme->style.label.prim);
-		lv_cont_set_layout(cont, LV_LAYOUT_ROW_M);
-		lv_cont_set_fit2(cont, LV_FIT_TIGHT, LV_FIT_TIGHT);
-		lv_obj_align(cont, 0, LV_ALIGN_IN_BOTTOM_RIGHT, -2, -2);
-		lv_obj_set_auto_realign(cont, 1);
+	//lv_cont_set_style(cont, LV_CONT_STYLE_MAIN, theme->style.label.prim);
+	lv_cont_set_layout(trp_info_container, LV_LAYOUT_ROW_M);
+	lv_cont_set_fit2(trp_info_container, LV_FIT_TIGHT, LV_FIT_TIGHT);
+	lv_obj_align(trp_info_container, 0, LV_ALIGN_IN_BOTTOM_RIGHT, -2, -2);
+	lv_obj_set_auto_realign(trp_info_container, 1);
 
-    }
+    
 
 
 //    lbl_bat = lv_label_create(lv_disp_get_layer_top(disp), NULL);
@@ -462,14 +474,14 @@ void display_setup() {
 //    lv_obj_align(lbl_bat, 0, LV_ALIGN_IN_TOP_LEFT, 2, -2);
 //    lv_label_set_recolor(lbl_bat, 1);
 
-    lbl_mah = lv_label_create(top_layer, NULL);
+    lbl_mah = lv_label_create(screen, NULL);
     lv_label_set_style(lbl_mah, LV_LABEL_STYLE_MAIN, &font_mono_small);
     lv_label_set_text_fmt(lbl_mah, "mAh\nDSG%05d\nCHG%05d", 0, 0);
     lv_label_set_align(lbl_mah, LV_LABEL_ALIGN_RIGHT);
 
     lv_obj_align(lbl_mah, 0, LV_ALIGN_IN_TOP_RIGHT, -2, 0);
 
-    lv_obj_t* cont = lv_cont_create(top_layer, NULL);
+    lv_obj_t* cont = lv_cont_create(screen, NULL);
     lv_cont_set_fit2(cont, LV_FIT_NONE, LV_FIT_TIGHT);
     lv_obj_set_width(cont, 60);
     //lv_obj_set_style(cont, &cont_style);
@@ -482,10 +494,8 @@ void display_setup() {
 
     lv_obj_align(cont, 0, LV_ALIGN_IN_LEFT_MID, 2, 0);
 
-    cont = lv_cont_create(top_layer, NULL);
+    cont = lv_cont_create(screen, NULL);
     //lv_obj_set_style(cont, &cont_style);
-
-
     lbl_mot_curr = lv_label_create(cont, NULL);
     lv_label_set_style(lbl_mot_curr, LV_LABEL_STYLE_MAIN, &medium_text_style);
     lv_label_set_text(lbl_mot_curr, "0A");
@@ -498,8 +508,8 @@ void display_setup() {
     lv_obj_align(cont, 0, LV_ALIGN_IN_RIGHT_MID, -2, 0);
 
     /* status bar */
-    lv_obj_t* statusbar = lv_cont_create(top_layer, NULL);
-    lv_cont_set_style(statusbar, LV_CONT_STYLE_MAIN, theme->style.bg);
+    lv_obj_t* statusbar = lv_cont_create(screen, NULL);
+    lv_cont_set_style(statusbar, LV_CONT_STYLE_MAIN, theme->style.scr);
 
     lbl_wifisymbol = lv_label_create(statusbar, NULL);
     //lv_label_set_style(lbl, LV_LABEL_STYLE_MAIN, &font_test_style);
@@ -527,7 +537,7 @@ void display_setup() {
     lv_obj_align(statusbar, 0, LV_ALIGN_IN_TOP_LEFT, 2, -2);
 
     /* duty gauge */
-    duty_gauge = lv_gauge_create(top_layer, NULL);
+    duty_gauge = lv_gauge_create(screen, NULL);
     lv_gauge_set_range(duty_gauge, 0, 100);
     lv_obj_set_width(duty_gauge, 60);
     lv_obj_set_height(duty_gauge, 60);
@@ -536,19 +546,62 @@ void display_setup() {
     lv_obj_align(duty_gauge, 0, LV_ALIGN_IN_LEFT_MID, 2, -34);
     /* ********** */
 
-	lbl_message = lv_label_create(top_layer, NULL);
+	lbl_message = lv_label_create(screen, NULL);
 	//lv_label_set_style(lbl_message, LV_LABEL_STYLE_MAIN, &font_10_style);
 	lv_label_set_recolor(lbl_message, true);
 	lv_label_set_static_text(lbl_message, "");
 	lv_obj_align(lbl_message, NULL, LV_ALIGN_IN_BOTTOM_LEFT, 4, -21);
 
-	power_label = lv_label_create(lv_disp_get_layer_top(disp), 0);
+	power_label = lv_label_create(screen, 0);
 	lv_label_set_recolor(power_label, true);
 	display_set_power_level(g_set_power_level);
 	lv_obj_set_auto_realign(power_label, 1);
-	lv_obj_align(power_label, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -10);
-	lv_obj_set_style(power_label, &font_28_style);
+	if(lv_disp_get_ver_res(disp) > 200) {
+		lv_obj_align(power_label, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -10);
+		lv_obj_set_style(power_label, &font_28_style);
 
+	} else {
+		lv_obj_align(power_label, lmeter, LV_ALIGN_IN_TOP_MID, 0, -4);
+		static lv_style_t roboto;
+		lv_style_copy(&roboto, &font_22_style);
+    	roboto.text.font = &lv_font_roboto_12;
+		lv_obj_set_style(power_label, &roboto);
+		//lv_obj_move_background(power_label);
+		
+	}
+
+	lv_obj_set_event_cb(power_label, [](struct _lv_obj_t * obj, lv_event_t event) {
+		ESP_LOGI(__func__, "%d", event);
+	});
+
+	// lv_group_t* grp = lv_group_create();
+	// lv_group_add_obj(grp, power_label);
+	// //lv_group_add_obj(grp, lmeter);
+
+	// lv_indev_set_group(btn_indev, grp);
+
+	lv_obj_move_foreground(lmeter);
+	lv_obj_move_foreground(lbl_mah);
+
+	brake_icon = lv_img_create(screen, 0);
+	lv_img_set_src(brake_icon, &brake);
+	lv_obj_align(brake_icon, odo_container, LV_ALIGN_OUT_TOP_LEFT, 0, 0);
+	lv_obj_set_hidden(brake_icon, true);
+	lv_style_t* red_style = new lv_style_t;
+	lv_style_copy(red_style, lv_obj_get_style(brake_icon));
+	red_style->image.color = LV_COLOR_RED;
+	lv_obj_set_style(brake_icon, red_style);
+
+	cruise_control_icon = lv_img_create(screen, 0);
+	lv_img_set_src(cruise_control_icon, &cruise_control_img);
+	lv_obj_align(cruise_control_icon, trp_info_container, LV_ALIGN_OUT_TOP_RIGHT, 0, 0);
+	lv_obj_set_hidden(cruise_control_icon, true);
+	lv_style_t* blue_style = new lv_style_t;
+	lv_style_copy(blue_style, lv_obj_get_style(cruise_control_icon));
+	blue_style->image.color = LV_COLOR_NAVY;
+	lv_obj_set_style(cruise_control_icon, blue_style);
+
+#ifdef CONFIG_LCD_TOUCH
 	lv_obj_t *b = lv_btn_create(lv_disp_get_layer_top(disp), 0);
 	static lv_style_t btn_label_style;
 	lv_style_copy(&btn_label_style, lv_obj_get_style(b));
@@ -561,6 +614,14 @@ void display_setup() {
 	lv_obj_set_event_cb(b, [](struct _lv_obj_t * obj, lv_event_t event) {
 		if(event == LV_EVENT_CLICKED) {
 			display_set_power_level(g_set_power_level-1);
+		}
+		if(event == LV_EVENT_PRESSING) {
+			printf("pressing\n");
+			set_current_brake_rel(0.5f);
+		}
+		if(event == LV_EVENT_RELEASED) {
+			set_current_brake_rel(0);
+
 		}
 	});
 
@@ -575,8 +636,16 @@ void display_setup() {
 		if(event == LV_EVENT_CLICKED) {
 			display_set_power_level(g_set_power_level+1);
 		}
-	});
+		if(event == LV_EVENT_PRESSING) {
+			printf("pressing\n");
+			set_current_rel(0.2f);
+		}
+		if(event == LV_EVENT_RELEASED) {
+			set_current_rel(0);
 
+		}
+	});
+#endif
 
 ///
 
@@ -586,7 +655,6 @@ void display_setup() {
 #endif
 
 	lv_task_handler();
-
 	
 }
 
@@ -653,6 +721,18 @@ void display_run() {
     }
 }
 
+void display_show_menu() {
+
+}
+
+void display_set_cruise_control_cb(void(*func)(uint8_t)) {
+	cruise_control_func = func;
+}
+
+void display_set_power_level_cb(void(*func)(int8_t)) {
+	power_lvl_changed_fn = func;
+}
+
 void display_set_power_level(int8_t power_level) {
 	if(power_level > 4) power_level = 4; else
 	if(power_level < -4) power_level = -4;
@@ -664,6 +744,9 @@ void display_set_power_level(int8_t power_level) {
 	LVGL_LOCK();
 	lv_label_set_text(power_label, buf);
 	LVGL_UNLOCK();
+
+	if(power_lvl_changed_fn)
+		power_lvl_changed_fn(g_set_power_level);
 }
 
 void display_set_mot_current_minmax(float min, float max) {
@@ -752,15 +835,12 @@ void display_set_bat_limits(float cut_start, float cut_end) {
 
 void display_set_bat_info(float volts, float amps) {
 	ON_CHANGED(volts, {
-		char s_volts[16];
-
-		if(volts < bat_cut_start) {
-			snprintf(s_volts, sizeof(s_volts), "#ff0000 %02.1fV#", volts);
-		} else {
-			snprintf(s_volts, sizeof(s_volts), "%02.1fV", volts);
-		}
 		LVGL_LOCK();
-		lv_label_set_text(lbl_volts, s_volts);
+		if(volts < bat_cut_start) {
+			lv_label_set_text_fmt(lbl_volts, "#ff0000 %02.1fV#", volts);
+		} else {
+			lv_label_set_text_fmt(lbl_volts, "%02.1fV", volts);
+		}
 		LVGL_UNLOCK();
 	});
 
@@ -821,6 +901,14 @@ void display_set_connected(bool connected) {
 		}
 		LVGL_UNLOCK();
 	})
+}
+
+void display_set_brake_icon(uint8_t show) {
+	lv_obj_set_hidden(brake_icon, !show);
+}
+
+void display_set_cruise_icon(uint8_t show) {
+	lv_obj_set_hidden(cruise_control_icon, !show);
 }
 
 }

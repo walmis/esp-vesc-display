@@ -30,18 +30,18 @@ static xSemaphoreHandle _spi_lock;
 
 IRAM_ATTR
 void spi_addbuffer16(uint16_t d) {
-	uint32_t pos32 = spi_bufpos/4;
-	d = __builtin_bswap16(d);
-	//ESP_LOGI(__func__, "%d", pos32);
-	if((spi_bufpos & 3) == 0) {
-		spi_buffer[pos32] = 0;
-		spi_buffer[pos32] |= d;
-	} else {
-		spi_buffer[pos32] |= ((uint32_t)d)<<16;
-	}
-	spi_bufpos+=2;
-	//((uint8_t*)spi_buffer)[spi_bufpos++] = d >> 8;
-	//((uint8_t*)spi_buffer)[spi_bufpos++] = d & 0xFF;
+	// uint32_t pos32 = spi_bufpos/4;
+	// d = __builtin_bswap16(d);
+	// //ESP_LOGI(__func__, "%d", pos32);
+	// if((spi_bufpos & 3) == 0) {
+	// 	spi_buffer[pos32] = 0;
+	// 	spi_buffer[pos32] |= d;
+	// } else {
+	// 	spi_buffer[pos32] |= ((uint32_t)d)<<16;
+	// }
+	// spi_bufpos+=2;
+	((uint8_t*)spi_buffer)[spi_bufpos++] = d >> 8;
+	((uint8_t*)spi_buffer)[spi_bufpos++] = d & 0xFF;
 }
 
 IRAM_ATTR
@@ -98,6 +98,8 @@ void spi_writeCommand8(uint8_t command) {
 
 IRAM_ATTR
 void spi_writeData16(uint16_t data) {
+	spi_flushdata();
+
 	spi_addbuffer16(data);
 
 	if(spi_bufpos >= 64) {
@@ -129,7 +131,9 @@ void spi_init() {
 	spi_config.intr_enable.val = SPI_MASTER_DEFAULT_INTR_ENABLE;
 	// Cancel hardware cs
 	spi_config.interface.cs_en = 0;
+#ifdef CONFIG_GPIO_TOUCH_CS
 	spi_config.interface.miso_en = 1;
+#endif
     spi_config.interface.mosi_en = 1;
 	spi_config.interface.cpol = 1;
 	spi_config.interface.cpha = 1;
@@ -149,6 +153,7 @@ void spi_beginTransaction(uint8_t cspin) {
     xSemaphoreTake(_spi_lock, portMAX_DELAY );
     _cs_pin = cspin;            
 
+#ifdef CONFIG_GPIO_TOUCH_CS
     if(_cs_pin == CONFIG_GPIO_TOUCH_CS) {
         spi_clk_div_t div = SPI_2MHz_DIV;
         spi_set_clk_div(HSPI_HOST, &div);
@@ -156,6 +161,7 @@ void spi_beginTransaction(uint8_t cspin) {
         spi_clk_div_t div = SPI_20MHz_DIV;
         spi_set_clk_div(HSPI_HOST, &div);
     }
+#endif
 
     gpio_set_level((gpio_num_t)_cs_pin, 0);
 
@@ -187,8 +193,9 @@ void spi_xfer(uint8_t* in, uint8_t* out, uint8_t len) {
 	trans.bits.miso = 8 * len;
     trans.mosi = outbuf;
 	trans.bits.mosi = 8 * len;
-	spi_trans(HSPI_HOST, &trans);
-
+	if(spi_trans(HSPI_HOST, &trans) == ESP_FAIL) {
+			ESP_LOGE(__func__, "spi_trans failed");
+	}
 	if(!ulTaskNotifyTake( pdTRUE, 100 )) {
 		ESP_LOGE(__func__, "SPI xfer timeout");
 	}
@@ -215,10 +222,15 @@ void spi_send_aligned(void* buffer, int size) {
     user_buffer.pos += to_send;
     user_buffer.size -= to_send;
 	trans.bits.mosi = 8 * to_send;
-	spi_trans(HSPI_HOST, &trans);
+	if(spi_trans(HSPI_HOST, &trans) == ESP_FAIL) {
+			ESP_LOGE(__func__, "spi_trans failed");
+	}
     
 	if(!ulTaskNotifyTake( pdTRUE, 100 )) {
 		ESP_LOGE(__func__, "SPI xfer timeout");
+	}
+	if(user_buffer.ptr) {
+		ESP_LOGE(__func__, "spi transfer failed");
 	}
     spi_task_notify_handle = 0;
 }
@@ -251,7 +263,16 @@ static IRAM_ATTR void spi_event_callback(int event, void *arg)
                     user_buffer.pos += to_send;
                     user_buffer.size -= to_send;
                     trans.bits.mosi = 8 * to_send;
-                    ESP_ERROR_CHECK(spi_trans(HSPI_HOST, &trans));
+                    
+					if(spi_trans(HSPI_HOST, &trans) != ESP_OK) {
+						//ESP_LOGE(__func__, "spi_trans failed");
+						BaseType_t xHigherPriorityTaskWoken = 0;
+						vTaskNotifyGiveFromISR( spi_task_notify_handle, &xHigherPriorityTaskWoken);
+						spi_task_notify_handle = 0;
+						if (xHigherPriorityTaskWoken) {
+							taskYIELD();
+						}
+					}
                 } else {
                     //mark transfer complete
                     user_buffer.ptr = 0;
