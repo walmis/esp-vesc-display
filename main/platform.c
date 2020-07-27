@@ -322,6 +322,7 @@ int putc_remote(int c) {
 
 
 int g_vesc_sock;
+uint8_t g_cruise_enabled;
 
 static void do_vesc_packet_send(unsigned char *data, unsigned int len) {
 #ifdef CONFIG_ESP_VESC_UART
@@ -612,6 +613,10 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         	t_odo_save = platform_time_ms();
         }
 
+		uint16_t adc_data = 0;
+		ESP_ERROR_CHECK(adc_read(&adc_data));
+		printf("adc read %d\n", adc_data);
+
 		uint8_t req = COMM_GET_VALUES;
 		packet_send_packet(&req, 1, 0);
 
@@ -798,6 +803,11 @@ void app_main(void) {
 
 	uart_driver_install(0, 256, 256, 16, &uart_events_queue, 0);
 	uart_set_baudrate(0, CONFIG_ESP_UART_BAUD);
+#else
+	//disable uart interrupts
+	uart_intr_config_t conf = {};
+	conf.intr_enable_mask = 0;
+	uart_intr_config(0, &conf);
 #endif
 
 	esp_err_t ret = nvs_flash_init();
@@ -826,9 +836,7 @@ void app_main(void) {
 	adc_config.clk_div = 8;
 	ESP_ERROR_CHECK(adc_init(&adc_config));
 
-	uint16_t adc_data = 0;
-	ESP_ERROR_CHECK(adc_read(&adc_data));
-	printf("adc read %d\n", adc_data);
+
 
 	httpd_start();
 #ifdef CONFIG_ESP_VESC_UART
