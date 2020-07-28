@@ -779,7 +779,9 @@ void wifi_init_sta()
 #endif
 
 void on_cruise_control_request(uint8_t long_press) {
-
+	if(mc_data.rpm == 0 && long_press) {
+		display_show_menu();
+	}
 }
 
 void on_power_limit_request(int8_t plimit) {

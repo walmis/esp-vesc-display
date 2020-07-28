@@ -32,6 +32,44 @@ lv_indev_t * touch_indev;
 lv_indev_drv_t btn_indev_drv;
 lv_indev_t* btn_indev;
 
+static lv_disp_t* disp;
+
+static lv_group_t* ctrl_group;
+
+static lv_obj_t *bar_power;
+static lv_obj_t* lbl_speed;
+static lv_obj_t* lbl_odo;
+static lv_obj_t* lbl_trip;
+static lv_obj_t* lbl_trip_val;
+static lv_obj_t* lbl_func;
+//static lv_obj_t* lbl_bat;
+static lv_obj_t* lbl_pow;
+static lv_obj_t* lbl_mah;
+static lv_obj_t* lbl_mot_curr;
+static lv_obj_t *lmeter;
+static lv_obj_t* duty_gauge;
+static lv_theme_t * theme;
+static lv_obj_t* lbl_volts;
+static lv_obj_t* lbl_amps;
+static lv_obj_t* lbl_wifisymbol;
+static lv_obj_t* lbl_message;
+static lv_obj_t *power_label;
+
+static lv_style_t font_large_num;
+static lv_style_t font_22_style;
+static lv_style_t font_28_style;
+static lv_style_t medium_text_style;
+static lv_style_t font_mono_small;
+static lv_style_t font_10_style;
+
+static void(*cruise_control_func)(uint8_t long_press);
+static void(*power_lvl_changed_fn)(int8_t level);
+
+static lv_obj_t* brake_icon ;
+static lv_obj_t* cruise_control_icon;
+
+int8_t g_set_power_level = 3;
+
 
 //#define DOUBLE_BUFFER
 
@@ -155,41 +193,7 @@ void vApplicationTickHook() {
 	lv_tick_inc(portTICK_PERIOD_MS);
 }
 
-static lv_group_t* ctrl_group;
 
-static lv_obj_t *bar_power;
-static lv_obj_t* lbl_speed;
-static lv_obj_t* lbl_odo;
-static lv_obj_t* lbl_trip;
-static lv_obj_t* lbl_trip_val;
-static lv_obj_t* lbl_func;
-//static lv_obj_t* lbl_bat;
-static lv_obj_t* lbl_pow;
-static lv_obj_t* lbl_mah;
-static lv_obj_t* lbl_mot_curr;
-static lv_obj_t *lmeter;
-static lv_obj_t* duty_gauge;
-static lv_theme_t * theme;
-static lv_obj_t* lbl_volts;
-static lv_obj_t* lbl_amps;
-static lv_obj_t* lbl_wifisymbol;
-static lv_obj_t* lbl_message;
-static lv_obj_t *power_label;
-
-static lv_style_t font_large_num;
-static lv_style_t font_22_style;
-static lv_style_t font_28_style;
-static lv_style_t medium_text_style;
-static lv_style_t font_mono_small;
-static lv_style_t font_10_style;
-
-static void(*cruise_control_func)(uint8_t long_press);
-static void(*power_lvl_changed_fn)(int8_t level);
-
-static lv_obj_t* brake_icon ;
-static lv_obj_t* cruise_control_icon;
-
-int8_t g_set_power_level = 3;
 
 
 void fonts_init() {
@@ -289,7 +293,7 @@ void display_setup() {
     disp_drv.flush_cb = lvgl_flush;    /*Set your driver function*/
     //disp_drv.monitor_cb = monitor_cb;
     disp_drv.buffer = &disp_buf;          /*Assign the buffer to the display*/
-    lv_disp_t* disp = lv_disp_drv_register(&disp_drv);      /*Finally register the driver*/
+    disp = lv_disp_drv_register(&disp_drv);      /*Finally register the driver*/
 
 #ifdef CONFIG_LCD_TOUCH
 	lv_indev_drv_init(&indev_drv);      
@@ -317,8 +321,8 @@ void display_setup() {
 			prev_states[0] = gpio_get_level((gpio_num_t)CONFIG_GPIO_BTN_UP);
 
 			if(prev_states[0] == 0) {
-				data->enc_diff = 1;
-				if(!ctrl_group) {
+				data->enc_diff = -1;
+				if(ctrl_group->frozen) {
 					display_set_power_level(g_set_power_level+1);
 				}
 			}
@@ -329,8 +333,8 @@ void display_setup() {
 			prev_states[1] = gpio_get_level((gpio_num_t)CONFIG_GPIO_BTN_DN);
 			
 			if(prev_states[1] == 0) {
-				data->enc_diff = -1;
-				if(!ctrl_group) {
+				data->enc_diff = 1;
+				if(ctrl_group->frozen) {
 					display_set_power_level(g_set_power_level-1);
 				}
 			}
@@ -338,7 +342,7 @@ void display_setup() {
 
 		if(gpio_get_level((gpio_num_t)CONFIG_GPIO_BTN_ENT) == 0 ) {
 			data->state = LV_BTN_STATE_PR;
-			if(!ctrl_group) {
+			if(ctrl_group->frozen) {
 				if(time_pressed == 0) {
 					time_pressed = lv_tick_get();
 					if(cruise_control_func)
@@ -361,6 +365,10 @@ void display_setup() {
 
 	/*Register the driver in LittlevGL and save the created input device object*/
 	btn_indev = lv_indev_drv_register(&btn_indev_drv);
+
+	ctrl_group = lv_group_create();
+	lv_group_focus_freeze(ctrl_group, true);
+	lv_indev_set_group(btn_indev, ctrl_group);
 #endif
 
     theme = lv_theme_material_init(0, NULL);
@@ -722,7 +730,62 @@ void display_run() {
 }
 
 void display_show_menu() {
+	LVGL_LOCK();
 
+	if(ctrl_group->frozen) {
+
+		lv_obj_t* top = lv_disp_get_layer_top(disp);
+		static lv_obj_t* list;
+		list = lv_list_create(top, 0);
+		lv_obj_t* obj;
+
+		lv_obj_set_event_cb(list, [](lv_obj_t * obj, lv_event_t event) {
+			printf("list event %d\n", event);
+		});
+
+		obj = lv_list_add_btn(list, 0, "Throttle cal");
+		lv_obj_set_event_cb(obj, [](lv_obj_t* obj, lv_event_t event) {
+			printf("thr cal event %d\n", event);
+			if(event == LV_EVENT_CLICKED) {
+				static const char * btns[] ={"Reset", "OK", "Cancel", ""};
+
+				lv_obj_t * mbox1 = lv_mbox_create(lv_disp_get_layer_top(disp), NULL);
+				lv_mbox_set_text(mbox1, "Min: 230 Max: 789");
+				lv_mbox_add_btns(mbox1, btns);
+				//lv_obj_set_width(mbox1, 200);
+				lv_obj_set_event_cb(mbox1, [](lv_obj_t* obj, lv_event_t event) {
+					if(event == LV_EVENT_VALUE_CHANGED) {
+						if(lv_mbox_get_active_btn(obj) == 2 /* cancel */) {
+							lv_obj_del_async(obj);
+							lv_group_remove_all_objs(ctrl_group);
+							lv_group_add_obj(ctrl_group, list);
+						}
+					}
+				});
+				lv_obj_align(mbox1, NULL, LV_ALIGN_CENTER, 0, 0); /*Align to the corner*/
+				lv_group_remove_all_objs(ctrl_group);
+				lv_group_add_obj(ctrl_group, mbox1);
+			}
+		});
+		lv_list_add_btn(list, 0, "Motor Current");
+		obj = lv_list_add_btn(list, 0, "Close");
+		lv_obj_set_event_cb(obj, [](lv_obj_t* obj, lv_event_t event) {
+			if(event == LV_EVENT_CLICKED) {
+				lv_group_remove_all_objs(ctrl_group);
+				lv_obj_del_async(list);
+				lv_group_focus_freeze(ctrl_group, true);
+				list = NULL;
+			}
+		});
+
+		lv_group_focus_freeze(ctrl_group, false);
+
+		lv_group_remove_all_objs(ctrl_group);
+		lv_group_add_obj(ctrl_group, list);	
+		lv_group_set_editing(ctrl_group, false);
+	}
+
+	LVGL_UNLOCK();
 }
 
 void display_set_cruise_control_cb(void(*func)(uint8_t)) {
