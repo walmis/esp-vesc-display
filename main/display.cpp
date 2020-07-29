@@ -15,6 +15,8 @@
 #include "spi.h"
 #include "display.h"
 #include <math.h>
+#include "esp_system.h"
+#include "utils.h"
 
 LV_IMG_DECLARE(brake);
 LV_IMG_DECLARE(cruise_control_img);
@@ -349,12 +351,19 @@ void display_setup() {
 						cruise_control_func(false);
 				}
 				if(time_pressed != 1 && lv_tick_get() - time_pressed > 1000) {
+#if CONFIG_GPIO_BTN_ENT == 0
+					//enter flash mode
+					if(prev_states[0] == 0) {
+						esp_restart();
+					}
+#endif
 					ESP_LOGI("event", "CC action");
 					if(cruise_control_func) 
 						cruise_control_func(true);
 					time_pressed = 1;
 				}
 			}
+
 		} else {
 			data->state = LV_BTN_STATE_REL;
 			time_pressed = 0;
@@ -745,26 +754,74 @@ void display_show_menu() {
 
 		obj = lv_list_add_btn(list, 0, "Throttle cal");
 		lv_obj_set_event_cb(obj, [](lv_obj_t* obj, lv_event_t event) {
-			printf("thr cal event %d\n", event);
 			if(event == LV_EVENT_CLICKED) {
+				struct State {
+					lv_obj_t* mbox;
+					uint16_t thr_min = 0xffff;
+					uint16_t thr_max = 0;
+				};
+
 				static const char * btns[] ={"Reset", "OK", "Cancel", ""};
 
 				lv_obj_t * mbox1 = lv_mbox_create(lv_disp_get_layer_top(disp), NULL);
-				lv_mbox_set_text(mbox1, "Min: 230 Max: 789");
+				lv_mbox_set_text(mbox1, "Curr: 200\nMin: 230 Max: 789");
 				lv_mbox_add_btns(mbox1, btns);
 				//lv_obj_set_width(mbox1, 200);
 				lv_obj_set_event_cb(mbox1, [](lv_obj_t* obj, lv_event_t event) {
-					if(event == LV_EVENT_VALUE_CHANGED) {
-						if(lv_mbox_get_active_btn(obj) == 2 /* cancel */) {
-							lv_obj_del_async(obj);
+					if(obj->user_data) {
+						lv_task_t* task = (lv_task_t*)obj->user_data;
+						State* state = (State*)task->user_data;
+					
+						if(event == LV_EVENT_VALUE_CHANGED) {
+							uint8_t btn = lv_mbox_get_active_btn(obj);
+							if(btn == 0) {
+
+								state->thr_max = 0;
+								state->thr_min = 0xFFFF;							
+							}
+							if(btn == 1) {
+								set_throttle_calibration(state->thr_min, state->thr_max);
+								lv_mbox_start_auto_close(obj, 0);
+							}
+							if(btn == 2 /* cancel */) {
+								lv_mbox_start_auto_close(obj, 0);
+							}
+						}
+						if(event == LV_EVENT_DELETE) {
 							lv_group_remove_all_objs(ctrl_group);
 							lv_group_add_obj(ctrl_group, list);
+
+							lv_task_t* task = (lv_task_t*)lv_obj_get_user_data(obj);
+							delete state;
+							lv_task_del(task);
 						}
 					}
 				});
 				lv_obj_align(mbox1, NULL, LV_ALIGN_CENTER, 0, 0); /*Align to the corner*/
 				lv_group_remove_all_objs(ctrl_group);
 				lv_group_add_obj(ctrl_group, mbox1);
+
+
+				lv_task_t* task = lv_task_create([](lv_task_t* task) {
+					State* state = (State*)task->user_data;
+
+					uint16_t adc = get_throttle_adc();
+					if(adc>state->thr_max) state->thr_max = adc;
+					if(adc<state->thr_min) state->thr_min = adc;
+
+					char* s;
+					asprintf(&s, "Curr: %d\nMin: %d Max: %d", adc, state->thr_min, state->thr_max);
+					lv_mbox_set_text(state->mbox, s);
+					free(s);
+				}, 50, LV_TASK_PRIO_MID, mbox1);
+
+				State* state = new State;
+				state->mbox = mbox1;
+				task->user_data = state;
+
+				lv_obj_set_user_data(mbox1, task);
+
+				
 			}
 		});
 		lv_list_add_btn(list, 0, "Motor Current");

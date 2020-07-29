@@ -42,6 +42,7 @@
 #include "esp_event_loop.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
+#include "nvs.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "driver/adc.h"
@@ -341,7 +342,7 @@ static void do_vesc_packet_send(unsigned char *data, unsigned int len) {
 #endif
 }
 
-double read_odometer() {
+static double read_odometer() {
 	double odo = 0;
 	size_t length = sizeof(odo);
 	nvs_get_blob(h_nvs_conf, "odometer", (void*)&odo, &length);
@@ -613,9 +614,7 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         	t_odo_save = platform_time_ms();
         }
 
-		uint16_t adc_data = 0;
-		ESP_ERROR_CHECK(adc_read(&adc_data));
-		printf("adc read %d\n", adc_data);
+
 
 		uint8_t req = COMM_GET_VALUES;
 		packet_send_packet(&req, 1, 0);
@@ -623,6 +622,20 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
 	}
 	}
 }
+
+//PUBLIC
+uint16_t get_throttle_adc() {
+	uint16_t adc_data = 0;
+	ESP_ERROR_CHECK(adc_read(&adc_data));
+	return adc_data;
+}
+
+//PUBLIC
+void set_throttle_calibration(uint16_t min, uint16_t max) {
+	nvs_set_u16(&h_nvs_conf, "throttle_cal_min", min);
+	nvs_set_u16(&h_nvs_conf, "throttle_cal_max", max);
+}
+
 
 void set_current_brake_rel(float current_rel) {
 	current_rel = clip(current_rel, 0, 1);
