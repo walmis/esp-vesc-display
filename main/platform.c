@@ -60,23 +60,34 @@
 #include <errno.h>
 #include <string.h>
 #include <math.h>
+#include "utils.h"
 
 #include "display.h"
 #include "sdkconfig.h"
 
-#define MAX(a,b) (((a)>(b))?(a):(b))
 
-float clip(float val, float min, float max) {
-	if(val<min) return min;
-	if(val>max) return max;
-	return val;
-}
-
-static nvs_handle h_nvs_conf;
+static nvs_handle g_nvs_handle;
 static uint32_t t_last_packet;
 static xSemaphoreHandle uart_lock;
 static xQueueHandle uart_events_queue;
 static xQueueHandle dbg_queue;
+
+static uint8_t g_motor_armed;
+
+static uint16_t g_throttle_cal_min;
+static uint16_t g_throttle_cal_max;
+static uint8_t g_brake_disabled;
+static int g_vesc_sock;
+static uint8_t g_cruise_enabled;
+
+struct mc_data mc_data;
+static mc_configuration mcconf;
+static bool have_mcconf;
+
+static double stored_odo;
+static int prev_odo;
+static uint32_t t_odo_save;
+static int g_initial_tach;
 
 #ifdef CONFIG_ESP_VESC_UART
 static int tcp_serv_sock;
@@ -239,7 +250,7 @@ void debug_putc(char c, int flush) {
 void platform_set_baud(uint32_t baud) {
 	uart_set_baudrate(0, baud);
 	uart_set_baudrate(1, baud);
-	nvs_set_u32(h_nvs_conf, "uartbaud", baud);
+	nvs_set_u32(g_nvs_handle, "uartbaud", baud);
 }
 
 
@@ -322,8 +333,7 @@ int putc_remote(int c) {
 }
 
 
-int g_vesc_sock;
-uint8_t g_cruise_enabled;
+
 
 static void do_vesc_packet_send(unsigned char *data, unsigned int len) {
 #ifdef CONFIG_ESP_VESC_UART
@@ -345,7 +355,7 @@ static void do_vesc_packet_send(unsigned char *data, unsigned int len) {
 static double read_odometer() {
 	double odo = 0;
 	size_t length = sizeof(odo);
-	nvs_get_blob(h_nvs_conf, "odometer", (void*)&odo, &length);
+	nvs_get_blob(g_nvs_handle, "odometer", (void*)&odo, &length);
 	if(!isnormal(odo)) {
 		return 0;
 	} else {
@@ -354,10 +364,101 @@ static double read_odometer() {
 }
 
 esp_err_t store_odometer(double val) {
-	return nvs_set_blob(h_nvs_conf, "odometer", (void*)&val, sizeof(val));
+	return nvs_set_blob(g_nvs_handle, "odometer", (void*)&val, sizeof(val));
 }
 
-struct mc_data mc_data;
+
+#define BRAKE_RAMP_UP_MS 200
+#define THROTTLE_RAMP_TIME_MS 200
+
+uint8_t motor_disarm() {
+	uint8_t tmp = g_motor_armed;
+	g_motor_armed = 0;
+	return tmp;
+}
+
+void motor_arm() {
+	g_motor_armed = 1;
+}
+
+void motor_set_current_brake_rel(float current_rel) {
+	if(have_mcconf) {
+		current_rel = clip(current_rel, 0, 1);
+		float min_current = fabsf(mcconf.l_current_min);
+		float current = current_rel * min_current;
+		uint8_t buffer[5];
+		buffer[0] = COMM_SET_CURRENT_BRAKE;
+		int32_t index = 1;
+		buffer_append_int32(buffer, current*1000.0f, &index);
+		packet_send_packet(buffer, index, 0);
+	}
+}
+
+void motor_set_current_rel(float current_rel) {
+	if(have_mcconf) {
+		uint8_t buffer[5];
+		buffer[0] = COMM_SET_CURRENT_REL;
+		int32_t index = 1;
+		buffer_append_float32(buffer, current_rel, 1e5, &index);
+		packet_send_packet(buffer, index, 0);
+	}
+}
+
+void update_motor_control() {
+	//if(have_mcconf) {
+		uint16_t adc = get_throttle_adc();
+		
+		static float brake_ramp;
+		static float throttle_ramp;
+
+		static uint32_t last_update;
+
+		uint32_t dt = platform_time_ms() - last_update;
+		last_update = platform_time_ms();
+
+		if(!g_motor_armed) {
+
+			motor_set_current_rel(0);
+
+		} else {
+
+			if(adc < 10 && !g_brake_disabled) {
+				display_set_brake_icon(1);
+
+				utils_step_towards(&brake_ramp, 1.0, (float)dt / BRAKE_RAMP_UP_MS);
+
+				motor_set_current_brake_rel(brake_ramp);
+
+			} else {
+				display_set_brake_icon(0);
+				// if brake signal released, release brake immediately
+				brake_ramp = 0;
+			}
+
+			//brake is released, apply throttle
+			if(brake_ramp == 0) {
+				if(g_set_power_level < 0) {
+					float brkval = utils_map(g_set_power_level, -4, 0, 1, 0);
+					motor_set_current_brake_rel(brkval);
+				} 
+				else if(g_throttle_cal_min != 0) {
+					float thrval = utils_map(adc, g_throttle_cal_min, g_throttle_cal_max, 0.0f, 1.0f);
+					thrval = clip(thrval, 0.0f, 1.0f);
+
+					utils_step_towards(&throttle_ramp, thrval, (float)dt / THROTTLE_RAMP_TIME_MS);
+
+					if(thrval > 0.02f) {
+						motor_set_current_rel(throttle_ramp);
+					} else {
+						motor_set_current_rel(0);
+					}
+				}
+			}
+		}
+
+	//}
+
+}
 
 const char* faultToStr(mc_fault_code fault)
 {
@@ -388,17 +489,10 @@ const char* faultToStr(mc_fault_code fault)
 //#define DBG_PRINT_VAL(val) ESP_LOGI(#val, "= %f", (float)val)
 #define DBG_PRINT_VAL(val)
 
-mc_configuration mcconf;
 
-static double stored_odo;
-static int prev_odo;
-static uint32_t t_odo_save;
-static int g_initial_tach;
-static bool have_mcconf;
 
 static void cb_packet_process(unsigned char *data, unsigned int len) {
 	//ESP_LOGI(__func__, "len:%d", len);
-	display_set_connected(1);
 
 	switch(data[0]) {
 	case COMM_GET_MCCONF:
@@ -417,6 +511,9 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
 			display_set_bat_limits(mcconf.l_battery_cut_start, mcconf.l_battery_cut_end);
 
 			have_mcconf = true;
+			display_set_connected(1);
+			motor_arm();
+
 		}
 
 		break;
@@ -550,10 +647,10 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
 		static float v_in_filt;
 		static float curr_in_filt;
 
-		currrent_motor_filt = currrent_motor_filt*0.9f + mc_data.current_motor * 0.1f;
-		duty_now_filt = duty_now_filt*0.9f + mc_data.duty_now * 0.1f;
-		v_in_filt = v_in_filt*0.9f + mc_data.v_in*0.1f;
-		curr_in_filt = curr_in_filt*0.9f + mc_data.current_in*0.1f;
+		UTILS_LP_FAST(currrent_motor_filt, mc_data.current_motor, 0.1f);
+		UTILS_LP_FAST(duty_now_filt, mc_data.duty_now, 0.1f);
+		UTILS_LP_FAST(v_in_filt, mc_data.v_in, 0.1f);
+		UTILS_LP_FAST(curr_in_filt, mc_data.current_in, 0.1f);
 
         display_set_duty(duty_now_filt);
         display_set_mos_temp(mc_data.temp_mos);
@@ -598,9 +695,9 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         		int diff = (mc_data.tachometer - prev_odo);
         		if(diff > 0) {
         			stored_odo += (double)diff * tach_ratio;
+		        	prev_odo = mc_data.tachometer;
         		}
         	}
-        	prev_odo = mc_data.tachometer;
         }
         display_set_odo(stored_odo);
 
@@ -614,14 +711,16 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         	t_odo_save = platform_time_ms();
         }
 
-
-
 		uint8_t req = COMM_GET_VALUES;
 		packet_send_packet(&req, 1, 0);
+
+		update_motor_control();
 
 	}
 	}
 }
+
+
 
 //PUBLIC
 uint16_t get_throttle_adc() {
@@ -632,30 +731,22 @@ uint16_t get_throttle_adc() {
 
 //PUBLIC
 void set_throttle_calibration(uint16_t min, uint16_t max) {
-	nvs_set_u16(&h_nvs_conf, "throttle_cal_min", min);
-	nvs_set_u16(&h_nvs_conf, "throttle_cal_max", max);
-}
+	if(min <= max) {
+		if(max < 1024)
+			g_throttle_cal_max = max;
+		if(min < 1024)
+			g_throttle_cal_min = min;
+	}
 
+	if(abs(max-min) > 100) {
+		esp_err_t ret;
+		ret = nvs_set_u16(g_nvs_handle, "thrcal_min", min);
+		if(ret != ESP_OK) {
+			ESP_LOGE(__func__, "failed to store cal (%s)", esp_err_to_name(ret));
+		}
+		nvs_set_u16(g_nvs_handle, "thrcal_max", max);
 
-void set_current_brake_rel(float current_rel) {
-	current_rel = clip(current_rel, 0, 1);
-	float min_current = mcconf.l_current_min;
-	float current = fabsf(current_rel * min_current);
-	uint8_t buffer[5];
-	buffer[0] = COMM_SET_CURRENT_BRAKE;
-	int32_t index = 1;
-	buffer_append_int32(buffer, current*1000.0f, &index);
-
-	packet_send_packet(buffer, index, 0);
-}
-
-void set_current_rel(float current_rel) {
-	uint8_t buffer[5];
-	buffer[0] = COMM_SET_CURRENT_REL;
-	int32_t index = 1;
-	buffer_append_float32(buffer, current_rel, 1e5, &index);
-
-	packet_send_packet(buffer, index, 0);
+	}
 }
 
 void vesc_poll_data() {
@@ -667,6 +758,8 @@ void vesc_poll_data() {
 	req = COMM_GET_VALUES;
 	packet_send_packet(&req, 1, 0);
 
+
+	update_motor_control();
 	//printf("heap %d\n", esp_get_free_heap_size());
 }
 
@@ -832,7 +925,7 @@ void app_main(void) {
 	}
 	ESP_ERROR_CHECK(ret);
 
-	ESP_ERROR_CHECK(nvs_open("config", NVS_READWRITE, &h_nvs_conf));
+	ESP_ERROR_CHECK(nvs_open("config", NVS_READWRITE, &g_nvs_handle));
 
 	vTaskPrioritySet(NULL, 3);
 
@@ -866,6 +959,21 @@ void app_main(void) {
 	packet_init(do_vesc_packet_send, cb_packet_process, 0);
 	stored_odo = read_odometer();
 	display_set_odo(stored_odo);
+
+	ret = nvs_get_u16(g_nvs_handle, "thrcal_min", &g_throttle_cal_min);
+	if(ret != ESP_OK) {
+		ESP_LOGE(__func__, "failed to load throttle cal");
+	}
+	nvs_get_u16(g_nvs_handle, "thrcal_max", &g_throttle_cal_max);
+
+	if(g_throttle_cal_min == 0 || g_throttle_cal_max == 0 || 
+			g_throttle_cal_min > g_throttle_cal_max ||
+			g_throttle_cal_max > 1023 || g_throttle_cal_min > 1023) {
+		g_throttle_cal_min = 0;
+		g_throttle_cal_max = 0;
+
+		display_show_message("Throttle not calibrated");
+	}
 
 	display_set_cruise_control_cb(on_cruise_control_request);
 	display_set_power_level_cb(on_power_limit_request);

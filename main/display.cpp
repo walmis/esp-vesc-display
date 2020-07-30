@@ -256,8 +256,8 @@ void make_power_label(char* buf, int level) {
 	}
 }
 
-extern "C" void set_current_rel(float current_rel);
-extern "C" void set_current_brake_rel(float current_rel);
+extern "C" void motor_set_current_rel(float current_rel);
+extern "C" void motor_set_current_brake_rel(float current_rel);
 
 extern "C"
 void display_setup() {
@@ -759,7 +759,11 @@ void display_show_menu() {
 					lv_obj_t* mbox;
 					uint16_t thr_min = 0xffff;
 					uint16_t thr_max = 0;
+					uint8_t motor_armed;
 				};
+
+				//reset existing calibration
+				set_throttle_calibration(0, 0);
 
 				static const char * btns[] ={"Reset", "OK", "Cancel", ""};
 
@@ -791,6 +795,8 @@ void display_show_menu() {
 							lv_group_remove_all_objs(ctrl_group);
 							lv_group_add_obj(ctrl_group, list);
 
+							if(state->motor_armed)
+								motor_arm();
 							lv_task_t* task = (lv_task_t*)lv_obj_get_user_data(obj);
 							delete state;
 							lv_task_del(task);
@@ -817,10 +823,10 @@ void display_show_menu() {
 
 				State* state = new State;
 				state->mbox = mbox1;
+				state->motor_armed = motor_disarm();
 				task->user_data = state;
 
 				lv_obj_set_user_data(mbox1, task);
-
 				
 			}
 		});
@@ -1020,15 +1026,23 @@ void display_set_connected(bool connected) {
 		    lv_obj_set_opa_scale(lbl_wifisymbol, 64);
 		}
 		LVGL_UNLOCK();
-	})
+	});
 }
 
 void display_set_brake_icon(uint8_t show) {
-	lv_obj_set_hidden(brake_icon, !show);
+	ON_CHANGED(show, {
+		LVGL_LOCK();
+		lv_obj_set_hidden(brake_icon, !show);
+		LVGL_UNLOCK();
+	});
 }
 
 void display_set_cruise_icon(uint8_t show) {
-	lv_obj_set_hidden(cruise_control_icon, !show);
+	ON_CHANGED(show, {
+		LVGL_LOCK();
+		lv_obj_set_hidden(cruise_control_icon, !show);
+		LVGL_UNLOCK();
+	});
 }
 
 }
