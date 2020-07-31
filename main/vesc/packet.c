@@ -20,6 +20,8 @@
 #include <string.h>
 #include "packet.h"
 #include "crc.h"
+#include "FreeRTOS.h"
+#include "semphr.h"
 
 /**
  * The latest update aims at achieving optimal re-synchronization in the
@@ -39,6 +41,7 @@ typedef struct {
 	int bytes_left;
 	unsigned char rx_buffer[BUFFER_LEN];
 	unsigned char tx_buffer[BUFFER_LEN];
+	xSemaphoreHandle mutex;
 } PACKET_STATE_t;
 
 // Private variables
@@ -53,6 +56,7 @@ void packet_init(void (*s_func)(unsigned char *data, unsigned int len),
 	memset(&m_handler_states[handler_num], 0, sizeof(PACKET_STATE_t));
 	m_handler_states[handler_num].send_func = s_func;
 	m_handler_states[handler_num].process_func = p_func;
+	m_handler_states[handler_num].mutex = xSemaphoreCreateRecursiveMutex();
 }
 
 void packet_reset(int handler_num) {
@@ -68,6 +72,7 @@ void packet_send_packet(unsigned char *data, unsigned int len, int handler_num) 
 
 	int b_ind = 0;
 	PACKET_STATE_t *handler = &m_handler_states[handler_num];
+	xQueueTakeMutexRecursive(handler->mutex, portMAX_DELAY);
 
 	if (len <= 255) {
 		handler->tx_buffer[b_ind++] = 2;
@@ -94,6 +99,7 @@ void packet_send_packet(unsigned char *data, unsigned int len, int handler_num) 
 	if (handler->send_func) {
 		handler->send_func(handler->tx_buffer, b_ind);
 	}
+	xQueueGiveMutexRecursive(handler->mutex);
 }
 
 /**

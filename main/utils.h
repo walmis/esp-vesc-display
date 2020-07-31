@@ -4,6 +4,7 @@
 extern "C" {
 #endif
 
+uint32_t platform_time_ms();
 void set_throttle_calibration(uint16_t min, uint16_t max);
 uint16_t get_throttle_adc();
 
@@ -44,6 +45,13 @@ static inline float clip(float val, float min, float max) {
 	if(val<min) return min;
 	if(val>max) return max;
 	return val;
+}
+
+static inline uint32_t utils_get_dt(uint32_t* prev) {
+    uint32_t time = platform_time_ms();
+    uint32_t dt = time - *prev;
+    *prev = time;
+    return dt;
 }
 
 #ifndef MAX

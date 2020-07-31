@@ -76,9 +76,8 @@ static uint8_t g_motor_armed;
 
 static uint16_t g_throttle_cal_min;
 static uint16_t g_throttle_cal_max;
-static uint8_t g_brake_disabled;
+static uint8_t g_brake_controls_disabled;
 static int g_vesc_sock;
-static uint8_t g_cruise_enabled;
 
 struct mc_data mc_data;
 static mc_configuration mcconf;
@@ -89,11 +88,19 @@ static int prev_odo;
 static uint32_t t_odo_save;
 static int g_initial_tach;
 
+static float tach_to_km;
+static float rpm_to_kmh;
+
+static float g_cc_current_set;
+static float g_cc_rpm_set;
+static uint8_t g_cc_enabled;
+
 #ifdef CONFIG_ESP_VESC_UART
-static int tcp_serv_sock;
-static int udp_serv_sock;
-static int tcp_client_sock;
-static struct sockaddr_in udp_peer_addr;
+static int g_tcp_serv_sock;
+static int g_udp_serv_sock;
+static int g_tcp_client_sock;
+static struct sockaddr_in g_udp_peer_addr;
+static uint8_t g_udp_connected;
 uint32_t uart_tx_count;
 #endif
 
@@ -148,12 +155,36 @@ void dbg_task(void *parameters) {
 
 	}
 }
-#ifdef CONFIG_ESP_VESC_UART
-void net_uart_task(void* params) {
 
-	tcp_serv_sock = socket(AF_INET, SOCK_STREAM, 0);
-	udp_serv_sock = socket(AF_INET, SOCK_DGRAM, 0);
-	tcp_client_sock = 0;
+#define PKT_VESC 0
+#define PKT_UDP 1
+#define PKT_TCP 2
+
+//whole packet received from tcp/udp, forward to vesc (handler 0)
+void _net_pkt_handler(unsigned char *data, unsigned int len) {
+	packet_send_packet(data, len, PKT_VESC);
+}
+
+void _net_pkt_tcp_snd_handler(unsigned char *data, unsigned int len) {
+	if(g_tcp_client_sock != 0) {
+		int ret = send(g_tcp_client_sock, data, len, MSG_DONTWAIT);
+
+	}
+}
+void _net_pkt_udp_snd_handler(unsigned char *data, unsigned int len) {
+	if(g_udp_connected) {
+		int ret = sendto(g_udp_serv_sock, data, len, MSG_DONTWAIT, &g_udp_peer_addr, sizeof(g_udp_peer_addr));
+		if(ret < 0 && ret != -EAGAIN) {
+			g_udp_connected = false;
+		}
+	}
+}
+
+void net_proxy_task(void* params) {
+
+	g_tcp_serv_sock = socket(AF_INET, SOCK_STREAM, 0);
+	g_udp_serv_sock = socket(AF_INET, SOCK_DGRAM, 0);
+	g_tcp_client_sock = 0;
 
 	int ret;
 
@@ -162,84 +193,83 @@ void net_uart_task(void* params) {
 	saddr.sin_port = ntohs(23);
 	saddr.sin_family = AF_INET;
 
-	bind(tcp_serv_sock, (struct sockaddr*)&saddr, sizeof(saddr));
+	bind(g_tcp_serv_sock, (struct sockaddr*)&saddr, sizeof(saddr));
 
 	saddr.sin_addr.s_addr = 0;
 	saddr.sin_port = ntohs(2323);
 	saddr.sin_family = AF_INET;
-	bind(udp_serv_sock, (struct sockaddr*)&saddr, sizeof(saddr));
-	listen(tcp_serv_sock, 1);
+	bind(g_udp_serv_sock, (struct sockaddr*)&saddr, sizeof(saddr));
+	listen(g_tcp_serv_sock, 1);
+	
+	fd_set fds;
+	struct timeval tv;
+	tv.tv_sec = 0;
+	tv.tv_usec = 100000;
 
 	while(1) {
-		fd_set fds;
-		struct timeval tv;
-		tv.tv_sec = 1;
-		tv.tv_usec = 0;
+		packet_timerfunc();
 
 		FD_ZERO(&fds);
-		FD_SET(tcp_serv_sock, &fds);
-		FD_SET(udp_serv_sock, &fds);
-		if(tcp_client_sock)
-			FD_SET(tcp_client_sock, &fds);
+		FD_SET(g_tcp_serv_sock, &fds);
+		FD_SET(g_udp_serv_sock, &fds);
+		if(g_tcp_client_sock)
+			FD_SET(g_tcp_client_sock, &fds);
 
-		int maxfd = MAX(tcp_serv_sock, MAX(udp_serv_sock, tcp_client_sock));
+		int maxfd = MAX(g_tcp_serv_sock, MAX(g_udp_serv_sock, g_tcp_client_sock));
 
 		if((ret = select(maxfd+1, &fds, NULL, NULL, &tv) > 0))
 		{
-			if(FD_ISSET(tcp_serv_sock, &fds)) {
-				tcp_client_sock = accept(tcp_serv_sock, 0, 0);
-				if(tcp_client_sock < 0) {
+			if(FD_ISSET(g_tcp_serv_sock, &fds)) {
+				g_tcp_client_sock = accept(g_tcp_serv_sock, 0, 0);
+				if(g_tcp_client_sock < 0) {
 					ESP_LOGE(__func__, "accept() failed");
-					tcp_client_sock = 0;
+					g_tcp_client_sock = 0;
 				} else {
 					ESP_LOGI(__func__, "accepted tcp connection");
 
 					int opt = 1; /* SO_KEEPALIVE */
-			        setsockopt(tcp_client_sock, SOL_SOCKET, SO_KEEPALIVE, (void *)&opt, sizeof(opt));
+			        setsockopt(g_tcp_client_sock, SOL_SOCKET, SO_KEEPALIVE, (void *)&opt, sizeof(opt));
 			        opt = 3; /* s TCP_KEEPIDLE */
-			        setsockopt(tcp_client_sock, IPPROTO_TCP, TCP_KEEPIDLE, (void*)&opt, sizeof(opt));
+			        setsockopt(g_tcp_client_sock, IPPROTO_TCP, TCP_KEEPIDLE, (void*)&opt, sizeof(opt));
 			        opt = 1; /* s TCP_KEEPINTVL */
-			        setsockopt(tcp_client_sock, IPPROTO_TCP, TCP_KEEPINTVL, (void *)&opt, sizeof(opt));
+			        setsockopt(g_tcp_client_sock, IPPROTO_TCP, TCP_KEEPINTVL, (void *)&opt, sizeof(opt));
 			        opt = 3; /* TCP_KEEPCNT */
-			        setsockopt(tcp_client_sock, IPPROTO_TCP, TCP_KEEPCNT, (void *)&opt, sizeof(opt));
+			        setsockopt(g_tcp_client_sock, IPPROTO_TCP, TCP_KEEPCNT, (void *)&opt, sizeof(opt));
 			        opt = 1;
-			        setsockopt(tcp_client_sock, IPPROTO_TCP, TCP_NODELAY, (void *)&opt, sizeof(opt));
+			        setsockopt(g_tcp_client_sock, IPPROTO_TCP, TCP_NODELAY, (void *)&opt, sizeof(opt));
 
 				}
 			}
 			uint8_t buf[128];
 
-			if(FD_ISSET(udp_serv_sock, &fds)) {
-				socklen_t slen = sizeof(udp_peer_addr);
-				ret = recvfrom(udp_serv_sock, buf, sizeof(buf), 0, (struct sockaddr*)&udp_peer_addr, &slen);
+			if(FD_ISSET(g_udp_serv_sock, &fds)) {
+				socklen_t slen = sizeof(g_udp_peer_addr);
+				ret = recvfrom(g_udp_serv_sock, buf, sizeof(buf), 0, (struct sockaddr*)&g_udp_peer_addr, &slen);
 				if(ret > 0) {
-					UART_LOCK();
-					uart_write_bytes(0, (const char*)buf, ret);
-					UART_UNLOCK();
-					uart_tx_count += ret;
+					g_udp_connected = true;
+					for(int i = 0; i < ret; i++) {
+						packet_process_byte(buf[i], PKT_UDP);
+					}
 				} else {
 					ESP_LOGE(__func__, "udp recvfrom() failed");
 				}
 			}
 
-			if(tcp_client_sock && FD_ISSET(tcp_client_sock, &fds)) {
-				ret = recv(tcp_client_sock, buf, sizeof(buf), MSG_DONTWAIT);
+			if(g_tcp_client_sock && FD_ISSET(g_tcp_client_sock, &fds)) {
+				ret = recv(g_tcp_client_sock, buf, sizeof(buf), MSG_DONTWAIT);
 				if(ret > 0) {
-					UART_LOCK();
-					uart_write_bytes(0, (const char*)buf, ret);
-					UART_UNLOCK();
-					uart_tx_count += ret;
+					for(int i = 0; i < ret; i++) {
+						packet_process_byte(buf[i], PKT_TCP);
+					}
 				} else {
 					ESP_LOGE(__func__, "tcp client recv() failed (%s)", strerror(errno));
-					close(tcp_client_sock);
-					tcp_client_sock = 0;
+					close(g_tcp_client_sock);
+					g_tcp_client_sock = 0;
 				}
 			}
 		}
 	}
-
 }
-#endif
 
 void debug_putc(char c, int flush) {
 	if(dbg_queue) {
@@ -335,11 +365,10 @@ int putc_remote(int c) {
 
 
 
-static void do_vesc_packet_send(unsigned char *data, unsigned int len) {
+static void vesc_packet_send_cb(unsigned char *data, unsigned int len) {
 #ifdef CONFIG_ESP_VESC_UART
-	UART_LOCK();
 	uart_write_bytes(0, (const char*)data, len);
-	UART_UNLOCK();
+	uart_wait_tx_done(0, portMAX_DELAY);
 #else
 	if(g_vesc_sock != 0) {
 		int ret = send(g_vesc_sock, data, len, MSG_DONTWAIT);
@@ -390,7 +419,17 @@ void motor_set_current_brake_rel(float current_rel) {
 		buffer[0] = COMM_SET_CURRENT_BRAKE;
 		int32_t index = 1;
 		buffer_append_int32(buffer, current*1000.0f, &index);
-		packet_send_packet(buffer, index, 0);
+		packet_send_packet(buffer, index, PKT_VESC);
+	}
+}
+
+void motor_set_current(float current) {
+	if(have_mcconf) {
+		uint8_t buffer[5];
+		buffer[0] = COMM_SET_CURRENT;
+		int32_t index = 1;
+		buffer_append_float32(buffer, current, 1e5, &index);
+		packet_send_packet(buffer, index, PKT_VESC);
 	}
 }
 
@@ -400,63 +439,69 @@ void motor_set_current_rel(float current_rel) {
 		buffer[0] = COMM_SET_CURRENT_REL;
 		int32_t index = 1;
 		buffer_append_float32(buffer, current_rel, 1e5, &index);
-		packet_send_packet(buffer, index, 0);
+		packet_send_packet(buffer, index, PKT_VESC);
 	}
 }
 
 void update_motor_control() {
-	//if(have_mcconf) {
+	if(have_mcconf) {
 		uint16_t adc = get_throttle_adc();
-		
-		static float brake_ramp;
-		static float throttle_ramp;
 
-		static uint32_t last_update;
+		//pressing brakes immediately disables cruise control
+		if(g_cc_enabled && adc < 10 && !g_brake_controls_disabled) {
+			g_cc_enabled = false;
+		}
 
-		uint32_t dt = platform_time_ms() - last_update;
-		last_update = platform_time_ms();
-
-		if(!g_motor_armed) {
-
-			motor_set_current_rel(0);
-
+		if(g_cc_enabled) {
+			display_set_cruise_icon(1);
+			motor_set_current(g_cc_current_set);
 		} else {
+			static float brake_ramp;
+			static float throttle_ramp;
+			static uint32_t last_update;
+			uint32_t dt = utils_get_dt(&last_update);
 
-			if(adc < 10 && !g_brake_disabled) {
-				display_set_brake_icon(1);
+			display_set_cruise_icon(0);
 
-				utils_step_towards(&brake_ramp, 1.0, (float)dt / BRAKE_RAMP_UP_MS);
-
-				motor_set_current_brake_rel(brake_ramp);
-
+			if(!g_motor_armed) {
+				motor_set_current_rel(0);
 			} else {
-				display_set_brake_icon(0);
-				// if brake signal released, release brake immediately
-				brake_ramp = 0;
-			}
+				if(adc < 10 && !g_brake_controls_disabled) {
+					display_set_brake_icon(1);
 
-			//brake is released, apply throttle
-			if(brake_ramp == 0) {
-				if(g_set_power_level < 0) {
-					float brkval = utils_map(g_set_power_level, -4, 0, 1, 0);
-					motor_set_current_brake_rel(brkval);
-				} 
-				else if(g_throttle_cal_min != 0) {
-					float thrval = utils_map(adc, g_throttle_cal_min, g_throttle_cal_max, 0.0f, 1.0f);
-					thrval = clip(thrval, 0.0f, 1.0f);
+					utils_step_towards(&brake_ramp, 1.0, (float)dt / BRAKE_RAMP_UP_MS);
 
-					utils_step_towards(&throttle_ramp, thrval, (float)dt / THROTTLE_RAMP_TIME_MS);
+					motor_set_current_brake_rel(brake_ramp);
 
-					if(thrval > 0.02f) {
-						motor_set_current_rel(throttle_ramp);
-					} else {
-						motor_set_current_rel(0);
+				} else {
+					display_set_brake_icon(0);
+					// if brake signal released, release brake immediately
+					brake_ramp = 0;
+				}
+
+				//brake is released, apply throttle
+				if(brake_ramp == 0) {
+					if(g_set_power_level < 0) {
+						float brkval = utils_map(g_set_power_level, -4, 0, 1, 0);
+						motor_set_current_brake_rel(brkval);
+					} 
+					else if(g_throttle_cal_min != 0) {
+						float thrval = utils_map(adc, g_throttle_cal_min, g_throttle_cal_max, 0.0f, 1.0f);
+						thrval = clip(thrval, 0.0f, 1.0f);
+
+						utils_step_towards(&throttle_ramp, thrval, (float)dt / THROTTLE_RAMP_TIME_MS);
+
+						if(thrval > 0.02f) {
+							motor_set_current_rel(throttle_ramp);
+						} else {
+							motor_set_current_rel(0);
+						}
 					}
 				}
 			}
 		}
 
-	//}
+	}
 
 }
 
@@ -491,8 +536,12 @@ const char* faultToStr(mc_fault_code fault)
 
 
 
-static void cb_packet_process(unsigned char *data, unsigned int len) {
+static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 	//ESP_LOGI(__func__, "len:%d", len);
+
+	//whole packet received from uart, forward to network (if connected)
+	packet_send_packet(data, len, PKT_TCP);
+	packet_send_packet(data, len, PKT_UDP);
 
 	switch(data[0]) {
 	case COMM_GET_MCCONF:
@@ -513,6 +562,9 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
 			have_mcconf = true;
 			display_set_connected(1);
 			motor_arm();
+
+			tach_to_km = (((1.0f * mcconf.si_gear_ratio) / (mcconf.si_motor_poles * 3.0f)) * (mcconf.si_wheel_diameter * M_PI)) / 1000.0f;
+        	rpm_to_kmh = 1.0f / (((mcconf.si_motor_poles / 2.0f) * 60.0f *	mcconf.si_gear_ratio) / (mcconf.si_wheel_diameter * M_PI) * 3.6f);
 
 		}
 
@@ -642,15 +694,20 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
             }
         }
 
+		static uint32_t prev_update;
+		uint32_t dt = utils_get_dt(&prev_update);
+
 		static float currrent_motor_filt;
 		static float duty_now_filt;
 		static float v_in_filt;
 		static float curr_in_filt;
 
-		UTILS_LP_FAST(currrent_motor_filt, mc_data.current_motor, 0.1f);
-		UTILS_LP_FAST(duty_now_filt, mc_data.duty_now, 0.1f);
-		UTILS_LP_FAST(v_in_filt, mc_data.v_in, 0.1f);
-		UTILS_LP_FAST(curr_in_filt, mc_data.current_in, 0.1f);
+		float alpha = dt / (dt + 200); // 200ms filter
+
+		UTILS_LP_FAST(currrent_motor_filt, mc_data.current_motor, alpha);
+		UTILS_LP_FAST(duty_now_filt, mc_data.duty_now, alpha);
+		UTILS_LP_FAST(v_in_filt, mc_data.v_in, alpha);
+		UTILS_LP_FAST(curr_in_filt, mc_data.current_in, alpha);
 
         display_set_duty(duty_now_filt);
         display_set_mos_temp(mc_data.temp_mos);
@@ -660,9 +717,8 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         display_set_mot_current(currrent_motor_filt);
         display_set_energy(mc_data.amp_hours_charged, mc_data.amp_hours);
 
-        float tach_ratio = (((1.0f * mcconf.si_gear_ratio) / (mcconf.si_motor_poles * 3.0f)) * (mcconf.si_wheel_diameter * M_PI)) / 1000.0f;
 
-        float trip_km = mc_data.tachometer * tach_ratio;
+        float trip_km = mc_data.tachometer * tach_to_km;
         display_set_trip(trip_km);
 
         static uint32_t trip_time_ms;
@@ -675,16 +731,19 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
 
         	display_set_triptime(trip_time_ms);
 
-        	float trip_km = (mc_data.tachometer - g_initial_tach) * tach_ratio;
+        	float trip_km = (mc_data.tachometer - g_initial_tach) * tach_to_km;
         	//ESP_LOGI(__func__, "trip rel %f %f", trip_km, (((float)trip_time_ms/1000.0f)/3600.0f));
 			if(trip_time_ms != 0)
         		display_set_avgspeed(trip_km / (((float)trip_time_ms/1000.0f)/3600.0f));
         }
 
         prev_trip_timestamp = platform_time_ms();
-		if(mcconf.si_wheel_diameter != 0) {
-        	float speedFact = ((mcconf.si_motor_poles / 2.0f) * 60.0f *	mcconf.si_gear_ratio) / (mcconf.si_wheel_diameter * M_PI);
-        	display_set_speed(mc_data.rpm / speedFact * 3.6f);
+		if(rpm_to_kmh != 0) {
+			float kmh = mc_data.rpm * rpm_to_kmh;
+        	display_set_speed(kmh);
+			if(kmh < 5) {
+				g_cc_enabled = false;
+			}
 		}
 
 
@@ -694,7 +753,7 @@ static void cb_packet_process(unsigned char *data, unsigned int len) {
         	if( mcconf.si_gear_ratio != 0 && mcconf.si_motor_poles != 0) {
         		int diff = (mc_data.tachometer - prev_odo);
         		if(diff > 0) {
-        			stored_odo += (double)diff * tach_ratio;
+        			stored_odo += (double)diff * tach_to_km;
 		        	prev_odo = mc_data.tachometer;
         		}
         	}
@@ -887,6 +946,14 @@ void wifi_init_sta()
 void on_cruise_control_request(uint8_t long_press) {
 	if(mc_data.rpm == 0 && long_press) {
 		display_show_menu();
+	} else
+	if(g_cc_enabled) {
+		g_cc_enabled = false;
+	} else
+	if(mc_data.rpm * rpm_to_kmh > 10 && long_press) {
+		g_cc_current_set = mc_data.current_motor;
+		g_cc_rpm_set = mc_data.rpm;
+		g_cc_enabled = true;
 	}
 }
 
@@ -956,7 +1023,10 @@ void app_main(void) {
 	display_setup();
 	ESP_LOGI(__func__, "display_setup end\n");
 
-	packet_init(do_vesc_packet_send, cb_packet_process, 0);
+	packet_init(vesc_packet_send_cb, vesc_process_packet_cb, PKT_VESC);
+	packet_init(_net_pkt_handler, _net_pkt_udp_snd_handler, PKT_UDP);
+	packet_init(_net_pkt_handler, _net_pkt_tcp_snd_handler, PKT_TCP);
+
 	stored_odo = read_odometer();
 	display_set_odo(stored_odo);
 
@@ -980,10 +1050,11 @@ void app_main(void) {
 
 #ifdef CONFIG_ESP_VESC_UART
 	xTaskCreate(&vesc_uart_task, "vesc_uart", 1500, NULL, 3, NULL);
-	xTaskCreate(&net_uart_task, "net_uart_task", 1500, NULL, 3, NULL);
 #else
 	xTaskCreate(&vesc_net_task, "vesc_net", 1500, NULL, 3, NULL);
 #endif
+
+	xTaskCreate(&net_proxy_task, "net_proxy_task", 1500, NULL, 3, NULL);
 
 	ota_tftp_init_server(69, 7);
 
