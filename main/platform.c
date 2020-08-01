@@ -74,6 +74,7 @@ static xQueueHandle dbg_queue;
 
 static uint8_t g_motor_armed;
 
+static float g_max_watts = 500;
 static uint16_t g_throttle_cal_min;
 static uint16_t g_throttle_cal_max;
 static uint8_t g_brake_controls_disabled;
@@ -95,14 +96,12 @@ static float g_cc_current_set;
 static float g_cc_rpm_set;
 static uint8_t g_cc_enabled;
 
-#ifdef CONFIG_ESP_VESC_UART
 static int g_tcp_serv_sock;
 static int g_udp_serv_sock;
 static int g_tcp_client_sock;
 static struct sockaddr_in g_udp_peer_addr;
 static uint8_t g_udp_connected;
 uint32_t uart_tx_count;
-#endif
 
 #define UART_LOCK() xSemaphoreTake(uart_lock, portMAX_DELAY)
 #define UART_UNLOCK() { uart_wait_tx_done(0, portMAX_DELAY); xSemaphoreGive(uart_lock); }
@@ -165,7 +164,7 @@ void _net_pkt_handler(unsigned char *data, unsigned int len) {
 	packet_send_packet(data, len, PKT_VESC);
 }
 
-void _net_pkt_tcp_snd_handler(unsigned char *data, unsigned int len) {
+void _net_pkt_tcp_snd_handler(unsigned char *data, unsigned int len) {\
 	if(g_tcp_client_sock != 0) {
 		int ret = send(g_tcp_client_sock, data, len, MSG_DONTWAIT);
 
@@ -173,7 +172,8 @@ void _net_pkt_tcp_snd_handler(unsigned char *data, unsigned int len) {
 }
 void _net_pkt_udp_snd_handler(unsigned char *data, unsigned int len) {
 	if(g_udp_connected) {
-		int ret = sendto(g_udp_serv_sock, data, len, MSG_DONTWAIT, &g_udp_peer_addr, sizeof(g_udp_peer_addr));
+
+		int ret = sendto(g_udp_serv_sock, data, len, MSG_DONTWAIT, (struct sockaddr*)&g_udp_peer_addr, sizeof(g_udp_peer_addr));
 		if(ret < 0 && ret != -EAGAIN) {
 			g_udp_connected = false;
 		}
@@ -190,16 +190,16 @@ void net_proxy_task(void* params) {
 
 	struct sockaddr_in saddr;
 	saddr.sin_addr.s_addr = 0;
-	saddr.sin_port = ntohs(23);
+	saddr.sin_port = ntohs(CONFIG_VESC_PR_TCP_PORT);
 	saddr.sin_family = AF_INET;
 
 	bind(g_tcp_serv_sock, (struct sockaddr*)&saddr, sizeof(saddr));
+	listen(g_tcp_serv_sock, 1);
 
 	saddr.sin_addr.s_addr = 0;
-	saddr.sin_port = ntohs(2323);
+	saddr.sin_port = ntohs(CONFIG_VESC_PR_UDP_PORT);
 	saddr.sin_family = AF_INET;
 	bind(g_udp_serv_sock, (struct sockaddr*)&saddr, sizeof(saddr));
-	listen(g_tcp_serv_sock, 1);
 	
 	fd_set fds;
 	struct timeval tv;
@@ -207,7 +207,7 @@ void net_proxy_task(void* params) {
 	tv.tv_usec = 100000;
 
 	while(1) {
-		packet_timerfunc();
+		//packet_timerfunc();
 
 		FD_ZERO(&fds);
 		FD_SET(g_tcp_serv_sock, &fds);
@@ -269,6 +269,49 @@ void net_proxy_task(void* params) {
 			}
 		}
 	}
+}
+
+void vesc_send_mcconf_temp() {
+	if(have_mcconf) {
+		uint8_t store = 0;
+		uint8_t forward_can = 0;
+		uint8_t divide_by_controllers = 0;
+		uint8_t ack = 0;
+
+		uint8_t buffer[64];
+		int idx = 0;
+		buffer[idx++] = COMM_SET_MCCONF_TEMP;
+		buffer[idx++] = store;
+		buffer[idx++] = forward_can;
+		buffer[idx++] = ack;
+		buffer[idx++] = divide_by_controllers;
+		
+		buffer_append_float32_auto(buffer, mcconf.l_current_min_scale, &idx);
+		buffer_append_float32_auto(buffer, mcconf.l_current_max_scale, &idx);
+		buffer_append_float32_auto(buffer, mcconf.l_min_erpm, &idx);
+		buffer_append_float32_auto(buffer, mcconf.l_max_erpm, &idx);
+		buffer_append_float32_auto(buffer, mcconf.l_min_duty, &idx);
+		buffer_append_float32_auto(buffer, mcconf.l_max_duty, &idx);
+		buffer_append_float32_auto(buffer, mcconf.l_watt_min, &idx);
+		buffer_append_float32_auto(buffer, mcconf.l_watt_max, &idx);
+		buffer_append_float32_auto(buffer, mcconf.l_in_current_min, &idx);
+		buffer_append_float32_auto(buffer, mcconf.l_in_current_max, &idx);	
+
+		packet_send_packet(buffer, idx, PKT_VESC);
+	}
+}
+
+bool vesc_update_power_level() {
+	if(have_mcconf) {
+		if(g_max_watts < 0) g_max_watts = 0;
+
+		float Pval = utils_map(g_set_power_level, 0, 4, 0, g_max_watts);
+		mcconf.l_watt_max = Pval;
+		vesc_send_mcconf_temp();
+
+		return true;
+	}
+	return false;
 }
 
 void debug_putc(char c, int flush) {
@@ -539,16 +582,16 @@ const char* faultToStr(mc_fault_code fault)
 static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 	//ESP_LOGI(__func__, "len:%d", len);
 
-	//whole packet received from uart, forward to network (if connected)
-	packet_send_packet(data, len, PKT_TCP);
-	packet_send_packet(data, len, PKT_UDP);
 
+	//printf("b\n");
 	switch(data[0]) {
 	case COMM_GET_MCCONF:
 	{
-		if(!confgenerator_deserialize_mcconf(++data, &mcconf)) {
+		if(!confgenerator_deserialize_mcconf(data+1, &mcconf)) {
 			ESP_LOGE(__func__, "Failed to deserialize mcconf, wrong signature?");
+			display_show_message("Incompatible vesc version");
 		} else {
+			have_mcconf = true;
 
 			ESP_LOGI(__func__, "mc_configuration size %d", sizeof(mc_configuration));
 			ESP_LOGI(__func__, "Battery Ah %f, cells: %d", 	mcconf.si_battery_ah, mcconf.si_battery_cells);
@@ -559,13 +602,14 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 			display_set_mot_current_minmax(mcconf.l_current_min, mcconf.l_current_max);
 			display_set_bat_limits(mcconf.l_battery_cut_start, mcconf.l_battery_cut_end);
 
-			have_mcconf = true;
+			vesc_update_power_level();
+
 			display_set_connected(1);
 			motor_arm();
 
 			tach_to_km = (((1.0f * mcconf.si_gear_ratio) / (mcconf.si_motor_poles * 3.0f)) * (mcconf.si_wheel_diameter * M_PI)) / 1000.0f;
-        	rpm_to_kmh = 1.0f / (((mcconf.si_motor_poles / 2.0f) * 60.0f *	mcconf.si_gear_ratio) / (mcconf.si_wheel_diameter * M_PI) * 3.6f);
-
+        	rpm_to_kmh =  1.0f / (((mcconf.si_motor_poles / 2.0f) * 60.0f *	mcconf.si_gear_ratio) / (mcconf.si_wheel_diameter * M_PI) / 3.6f);
+			
 		}
 
 		break;
@@ -697,24 +741,26 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 		static uint32_t prev_update;
 		uint32_t dt = utils_get_dt(&prev_update);
 
-		static float currrent_motor_filt;
+		static float current_motor_filt;
 		static float duty_now_filt;
 		static float v_in_filt;
 		static float curr_in_filt;
+		static float power_filt;
 
-		float alpha = dt / (dt + 200); // 200ms filter
+		float alpha = (float)dt / (dt + 100); // 100ms filter
 
-		UTILS_LP_FAST(currrent_motor_filt, mc_data.current_motor, alpha);
+		UTILS_LP_FAST(current_motor_filt, mc_data.current_motor, alpha);
 		UTILS_LP_FAST(duty_now_filt, mc_data.duty_now, alpha);
 		UTILS_LP_FAST(v_in_filt, mc_data.v_in, alpha);
 		UTILS_LP_FAST(curr_in_filt, mc_data.current_in, alpha);
+		UTILS_LP_FAST(power_filt, mc_data.current_in * mc_data.v_in, alpha);
 
         display_set_duty(duty_now_filt);
         display_set_mos_temp(mc_data.temp_mos);
-        display_set_curr_power(mc_data.current_in * mc_data.v_in);
+        display_set_curr_power(power_filt);
         display_set_bat_info(v_in_filt, curr_in_filt);
 		
-        display_set_mot_current(currrent_motor_filt);
+        display_set_mot_current(current_motor_filt);
         display_set_energy(mc_data.amp_hours_charged, mc_data.amp_hours);
 
 
@@ -760,7 +806,7 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
         }
         display_set_odo(stored_odo);
 
-        if(platform_time_ms() - t_odo_save > 5000 && read_odometer() < stored_odo) {
+        if(platform_time_ms() - t_odo_save > 5000 && fabsf(read_odometer()-stored_odo) > 0.05) {
         	ESP_LOGI(__func__, "Store odo value %f", stored_odo);
 
         	esp_err_t ret = store_odometer(stored_odo);
@@ -770,8 +816,12 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
         	t_odo_save = platform_time_ms();
         }
 
+		//whole packet received from uart, forward to network (if connected)
+		packet_send_packet(data, len, PKT_TCP);
+		packet_send_packet(data, len, PKT_UDP);
+
 		uint8_t req = COMM_GET_VALUES;
-		packet_send_packet(&req, 1, 0);
+		packet_send_packet(&req, 1, PKT_VESC);
 
 		update_motor_control();
 
@@ -899,7 +949,7 @@ void vesc_net_task(void* param) {
 			ret = recv(g_vesc_sock, buf, sizeof(buf), MSG_DONTWAIT);
 			if(ret > 0) {
 				for(int i = 0; i < ret; i++) {
-					packet_process_byte(buf[i], 0);
+					packet_process_byte(buf[i], PKT_VESC);
 				}
 			} else {
 				ESP_LOGE(__func__, "recv() failed");
@@ -953,12 +1003,15 @@ void on_cruise_control_request(uint8_t long_press) {
 	if(mc_data.rpm * rpm_to_kmh > 10 && long_press) {
 		g_cc_current_set = mc_data.current_motor;
 		g_cc_rpm_set = mc_data.rpm;
+		ESP_LOGI(__func__, "set cruise %f", g_cc_current_set);
 		g_cc_enabled = true;
 	}
 }
 
 void on_power_limit_request(int8_t plimit) {
-
+	if(have_mcconf && plimit >= 0) {
+		vesc_update_power_level();
+	}
 }
 
 void app_main(void) {
@@ -967,6 +1020,9 @@ void app_main(void) {
 
 	uart_lock = xSemaphoreCreateMutex();
 
+#ifdef CONFIG_ESP_VESC_UART
+	esp_log_set_putchar(putc_remote);
+#endif
 	//esp_log_set_putchar(putc_noop);
 
 	/* we are not using uart rx, disable interrupt */
@@ -1014,9 +1070,7 @@ void app_main(void) {
 
 
 	httpd_start();
-#ifdef CONFIG_ESP_VESC_UART
-	//esp_log_set_putchar(putc_remote);
-#endif
+
 	esp_wifi_set_ps(WIFI_PS_NONE);
 
 	ESP_LOGI(__func__, "display_setup begin\n");
@@ -1024,8 +1078,8 @@ void app_main(void) {
 	ESP_LOGI(__func__, "display_setup end\n");
 
 	packet_init(vesc_packet_send_cb, vesc_process_packet_cb, PKT_VESC);
-	packet_init(_net_pkt_handler, _net_pkt_udp_snd_handler, PKT_UDP);
-	packet_init(_net_pkt_handler, _net_pkt_tcp_snd_handler, PKT_TCP);
+	packet_init(_net_pkt_udp_snd_handler, _net_pkt_handler, PKT_UDP);
+	packet_init(_net_pkt_tcp_snd_handler, _net_pkt_handler, PKT_TCP);
 
 	stored_odo = read_odometer();
 	display_set_odo(stored_odo);

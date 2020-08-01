@@ -749,7 +749,7 @@ void display_show_menu() {
 		lv_obj_t* obj;
 
 		lv_obj_set_event_cb(list, [](lv_obj_t * obj, lv_event_t event) {
-			printf("list event %d\n", event);
+			//printf("list event %d\n", event);
 		});
 
 		obj = lv_list_add_btn(list, 0, "Throttle cal");
@@ -915,7 +915,7 @@ void display_set_trip(float dist) {
 
 
 void display_set_odo(float dist) {
-	ON_CHANGED(lroundf(dist),
+	ON_CHANGED((int)floor(dist),
 	{
 		LVGL_LOCK();
 		lv_label_set_text_fmt(lbl_odo, "%05d", value);

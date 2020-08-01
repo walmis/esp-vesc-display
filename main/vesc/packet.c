@@ -72,7 +72,7 @@ void packet_send_packet(unsigned char *data, unsigned int len, int handler_num) 
 
 	int b_ind = 0;
 	PACKET_STATE_t *handler = &m_handler_states[handler_num];
-	xQueueTakeMutexRecursive(handler->mutex, portMAX_DELAY);
+	xSemaphoreTakeRecursive(handler->mutex, portMAX_DELAY);
 
 	if (len <= 255) {
 		handler->tx_buffer[b_ind++] = 2;
@@ -99,7 +99,7 @@ void packet_send_packet(unsigned char *data, unsigned int len, int handler_num) 
 	if (handler->send_func) {
 		handler->send_func(handler->tx_buffer, b_ind);
 	}
-	xQueueGiveMutexRecursive(handler->mutex);
+	xSemaphoreGiveRecursive(handler->mutex);
 }
 
 /**

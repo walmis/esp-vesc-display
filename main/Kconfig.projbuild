@@ -54,6 +54,18 @@ config ESP_AP_PSK
 endif
 endif
 
+config VESC_PR_TCP_PORT
+    int "VESC Proxy TCP Port"
+    default 23
+    help
+	TODO
+
+config VESC_PR_UDP_PORT
+    int "VESC Proxy UDP Port"
+    default 2333
+    help
+	TODO
+
 choice ESP_TFT
     prompt "TFT Display type"
     default ESP_TFT_ILI9225

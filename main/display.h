@@ -35,7 +35,6 @@ void display_run();
 void display_setup();
 
 extern int8_t g_set_power_level;
-extern uint8_t g_request_cruise_control;
 
 
 #ifdef __cplusplus
