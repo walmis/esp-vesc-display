@@ -762,9 +762,6 @@ void display_show_menu() {
 					uint8_t motor_armed;
 				};
 
-				//reset existing calibration
-				set_throttle_calibration(0, 0);
-
 				static const char * btns[] ={"Reset", "OK", "Cancel", ""};
 
 				lv_obj_t * mbox1 = lv_mbox_create(lv_disp_get_layer_top(disp), NULL);
@@ -806,6 +803,7 @@ void display_show_menu() {
 				lv_obj_align(mbox1, NULL, LV_ALIGN_CENTER, 0, 0); /*Align to the corner*/
 				lv_group_remove_all_objs(ctrl_group);
 				lv_group_add_obj(ctrl_group, mbox1);
+				lv_group_focus_obj(mbox1);
 
 
 				lv_task_t* task = lv_task_create([](lv_task_t* task) {

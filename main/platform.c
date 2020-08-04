@@ -65,10 +65,10 @@
 #include "display.h"
 #include "sdkconfig.h"
 
+#define ADC_BRAKE_THRESHOLD 50
 
 static nvs_handle g_nvs_handle;
 static uint32_t t_last_packet;
-static xSemaphoreHandle uart_lock;
 static xQueueHandle uart_events_queue;
 static xQueueHandle dbg_queue;
 
@@ -102,9 +102,6 @@ static int g_tcp_client_sock;
 static struct sockaddr_in g_udp_peer_addr;
 static uint8_t g_udp_connected;
 uint32_t uart_tx_count;
-
-#define UART_LOCK() xSemaphoreTake(uart_lock, portMAX_DELAY)
-#define UART_UNLOCK() { uart_wait_tx_done(0, portMAX_DELAY); xSemaphoreGive(uart_lock); }
 
 
 const char*
@@ -491,7 +488,7 @@ void update_motor_control() {
 		uint16_t adc = get_throttle_adc();
 
 		//pressing brakes immediately disables cruise control
-		if(g_cc_enabled && adc < 10 && !g_brake_controls_disabled) {
+		if(g_cc_enabled && adc < ADC_BRAKE_THRESHOLD && !g_brake_controls_disabled) {
 			g_cc_enabled = false;
 		}
 
@@ -582,6 +579,9 @@ const char* faultToStr(mc_fault_code fault)
 static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 	//ESP_LOGI(__func__, "len:%d", len);
 
+	//whole packet received from uart, forward to network (if connected)
+	packet_send_packet(data, len, PKT_TCP);
+	packet_send_packet(data, len, PKT_UDP);
 
 	//printf("b\n");
 	switch(data[0]) {
@@ -598,6 +598,11 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 			ESP_LOGI(__func__, "Motor Poles %d", mcconf.si_motor_poles);
 			ESP_LOGI(__func__, "Mot Current Min %f Max %f", mcconf.l_current_min, mcconf.l_current_max);
 			ESP_LOGI(__func__, "Wheel diam %f", mcconf.si_wheel_diameter);
+
+			if(mcconf.si_battery_type == BATTERY_TYPE_LIION_3_0__4_2) {
+				g_max_watts = 4.2f * mcconf.si_battery_cells * mcconf.l_in_current_max;
+				ESP_LOGI(__func__, "Detected max power %d W", (int)g_max_watts);
+			}
 
 			display_set_mot_current_minmax(mcconf.l_current_min, mcconf.l_current_max);
 			display_set_bat_limits(mcconf.l_battery_cut_start, mcconf.l_battery_cut_end);
@@ -772,7 +777,7 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 
         display_set_mos_temp(mc_data.temp_mos);
 
-        if(abs(mc_data.rpm) > 0) {
+        if(abs(mc_data.rpm) > 50) {
         	trip_time_ms += (platform_time_ms() - prev_trip_timestamp);
 
         	display_set_triptime(trip_time_ms);
@@ -786,8 +791,10 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
         prev_trip_timestamp = platform_time_ms();
 		if(rpm_to_kmh != 0) {
 			float kmh = mc_data.rpm * rpm_to_kmh;
-        	display_set_speed(kmh);
-			if(kmh < 5) {
+			static float speed_filt;
+			UTILS_LP_FAST(speed_filt, kmh, alpha);
+        	display_set_speed(speed_filt);
+			if(speed_filt < 10) {
 				g_cc_enabled = false;
 			}
 		}
@@ -806,7 +813,7 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
         }
         display_set_odo(stored_odo);
 
-        if(platform_time_ms() - t_odo_save > 5000 && fabsf(read_odometer()-stored_odo) > 0.05) {
+        if(platform_time_ms() - t_odo_save > 5000 && fabsf(read_odometer()-stored_odo) > 0.05f) {
         	ESP_LOGI(__func__, "Store odo value %f", stored_odo);
 
         	esp_err_t ret = store_odometer(stored_odo);
@@ -816,15 +823,11 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
         	t_odo_save = platform_time_ms();
         }
 
-		//whole packet received from uart, forward to network (if connected)
-		packet_send_packet(data, len, PKT_TCP);
-		packet_send_packet(data, len, PKT_UDP);
-
-		uint8_t req = COMM_GET_VALUES;
-		packet_send_packet(&req, 1, PKT_VESC);
-
-		update_motor_control();
-
+		//if(!g_tcp_client_sock) {
+			//uint8_t req = COMM_GET_VALUES;
+			//packet_send_packet(&req, 1, PKT_VESC);
+			update_motor_control();
+		//}
 	}
 	}
 }
@@ -833,9 +836,15 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 
 //PUBLIC
 uint16_t get_throttle_adc() {
+	static uint16_t samples[5];
+	static uint8_t sample_idx;
 	uint16_t adc_data = 0;
 	ESP_ERROR_CHECK(adc_read(&adc_data));
-	return adc_data;
+
+	samples[sample_idx++] = adc_data;
+	if(sample_idx >= 5) sample_idx = 0;
+
+	return utils_median_5_int(samples[0], samples[1], samples[2], samples[3], samples[4]);
 }
 
 //PUBLIC
@@ -875,15 +884,24 @@ void vesc_poll_data() {
 #ifdef CONFIG_ESP_VESC_UART
 void vesc_uart_task(void* param) {
 	uart_event_t event;
-	uint8_t buffer[64];
+	uint8_t buffer[128];
+	unsigned long prevWake = 0;
 	while(1) {
-		int res = uart_read_bytes(0, buffer, sizeof(buffer), 100);
-		for(int i = 0; i < res; i++) {
-			packet_process_byte(buffer[i], 0);
+		int res;
+		while((res = uart_read_bytes(0, buffer, sizeof(buffer), 1 /* tick */)) > 0) {
+			for(int i = 0; i < res; i++) {
+				packet_process_byte(buffer[i], PKT_VESC);
+			}
 		}
 
+		vTaskDelayUntil(&prevWake, 20/portTICK_PERIOD_MS);
+
 		if(!have_mcconf) {
+			vTaskDelayMs(100);
 			vesc_poll_data();
+		} else {
+			uint8_t req = COMM_GET_VALUES;
+			packet_send_packet(&req, 1, PKT_VESC);
 		}
 	}
 }
@@ -994,13 +1012,13 @@ void wifi_init_sta()
 #endif
 
 void on_cruise_control_request(uint8_t long_press) {
-	if(mc_data.rpm == 0 && long_press) {
+	if(mc_data.rpm * rpm_to_kmh < 5 && long_press) {
 		display_show_menu();
 	} else
 	if(g_cc_enabled) {
 		g_cc_enabled = false;
 	} else
-	if(mc_data.rpm * rpm_to_kmh > 10 && long_press) {
+	if(mc_data.rpm * rpm_to_kmh > 10 && long_press && mc_data.current_motor > 0) {
 		g_cc_current_set = mc_data.current_motor;
 		g_cc_rpm_set = mc_data.rpm;
 		ESP_LOGI(__func__, "set cruise %f", g_cc_current_set);
@@ -1018,8 +1036,6 @@ void app_main(void) {
     tcpip_adapter_init();
     ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL) );
 
-	uart_lock = xSemaphoreCreateMutex();
-
 #ifdef CONFIG_ESP_VESC_UART
 	esp_log_set_putchar(putc_remote);
 #endif
@@ -1032,7 +1048,7 @@ void app_main(void) {
 
 #ifdef CONFIG_ESP_VESC_UART
 
-	uart_driver_install(0, 256, 256, 16, &uart_events_queue, 0);
+	uart_driver_install(0, 512, 256, 16, &uart_events_queue, 0);
 	uart_set_baudrate(0, CONFIG_ESP_UART_BAUD);
 #else
 	//disable uart interrupts

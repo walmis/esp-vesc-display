@@ -119,6 +119,8 @@ static int ota_tftp_init() {
 	}
     
     SHOW_MESSAGE("Begina OTA")
+    ESP_LOGI(TAG, "Begin ota");
+    vTaskDelay(1);
 
 	err_t err = esp_ota_begin(update_part, OTA_SIZE_UNKNOWN, &update_handle);
 	if (err != ESP_OK)
