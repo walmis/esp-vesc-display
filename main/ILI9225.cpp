@@ -209,13 +209,8 @@ void ILI9225_init() {
     cfg.mode = GPIO_MODE_OUTPUT;
 
     cfg.pin_bit_mask = BIT(CONFIG_GPIO_TFT_CS) | BIT(CONFIG_GPIO_TFT_DC) | BIT(CONFIG_GPIO_TFT_RST) ;
-#if CONFIG_GPIO_TFT_LED >= 0
-    cfg.pin_bit_mask | = BIT(CONFIG_GPIO_TFT_LED);
-#endif
     gpio_config(&cfg);
-#if CONFIG_GPIO_TFT_LED >= 0
-    gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_LED, 1);
-#endif
+
 
 
 	// Control pins

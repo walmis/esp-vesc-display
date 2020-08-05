@@ -749,7 +749,7 @@ void display_show_menu() {
 		lv_obj_t* obj;
 
 		lv_obj_set_event_cb(list, [](lv_obj_t * obj, lv_event_t event) {
-			//printf("list event %d\n", event);
+			ESP_LOGI("lv_obj_set_event_cb", "list event %d\n", event);
 		});
 
 		obj = lv_list_add_btn(list, 0, "Throttle cal");
@@ -769,6 +769,7 @@ void display_show_menu() {
 				lv_mbox_add_btns(mbox1, btns);
 				//lv_obj_set_width(mbox1, 200);
 				lv_obj_set_event_cb(mbox1, [](lv_obj_t* obj, lv_event_t event) {
+					ESP_LOGI("mbox1 event", "%d\n", event);
 					if(obj->user_data) {
 						lv_task_t* task = (lv_task_t*)obj->user_data;
 						State* state = (State*)task->user_data;
@@ -801,10 +802,6 @@ void display_show_menu() {
 					}
 				});
 				lv_obj_align(mbox1, NULL, LV_ALIGN_CENTER, 0, 0); /*Align to the corner*/
-				lv_group_remove_all_objs(ctrl_group);
-				lv_group_add_obj(ctrl_group, mbox1);
-				lv_group_focus_obj(mbox1);
-
 
 				lv_task_t* task = lv_task_create([](lv_task_t* task) {
 					State* state = (State*)task->user_data;
@@ -825,6 +822,11 @@ void display_show_menu() {
 				task->user_data = state;
 
 				lv_obj_set_user_data(mbox1, task);
+				
+				lv_group_remove_all_objs(ctrl_group);
+				lv_group_add_obj(ctrl_group, mbox1);
+				//lv_group_focus_obj(mbox1);
+				//lv_group_set_editing(ctrl_group, 0);
 				
 			}
 		});

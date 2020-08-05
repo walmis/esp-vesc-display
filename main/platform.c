@@ -374,7 +374,8 @@ void wifi_init_softap()
         .ap = {
             .password = CONFIG_ESP_AP_PSK,
             .max_connection = 4,
-            .authmode = WIFI_AUTH_WPA2_PSK
+            .authmode = WIFI_AUTH_WPA2_PSK,
+			.channel = 6
 
         },
     };
@@ -1032,7 +1033,13 @@ void on_power_limit_request(int8_t plimit) {
 	}
 }
 
+
 void app_main(void) {
+#if CONFIG_GPIO_TFT_LED >= 0
+	gpio_set_direction(CONFIG_GPIO_TFT_LED, GPIO_MODE_OUTPUT);
+	gpio_set_level(CONFIG_GPIO_TFT_LED, 0);
+#endif
+
     tcpip_adapter_init();
     ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL) );
 
@@ -1093,6 +1100,10 @@ void app_main(void) {
 	display_setup();
 	ESP_LOGI(__func__, "display_setup end\n");
 
+#if CONFIG_GPIO_TFT_LED >= 0
+	gpio_set_level(CONFIG_GPIO_TFT_LED, 1);
+#endif
+
 	packet_init(vesc_packet_send_cb, vesc_process_packet_cb, PKT_VESC);
 	packet_init(_net_pkt_udp_snd_handler, _net_pkt_handler, PKT_UDP);
 	packet_init(_net_pkt_tcp_snd_handler, _net_pkt_handler, PKT_TCP);
@@ -1127,6 +1138,9 @@ void app_main(void) {
 	xTaskCreate(&net_proxy_task, "net_proxy_task", 1500, NULL, 3, NULL);
 
 	ota_tftp_init_server(69, 7);
+
+	extern void netcat_ota_task(void* port);
+	xTaskCreate(&netcat_ota_task, "netcat-ota", 1500, (void*)120, 3, NULL);
 
 	ESP_LOGI(__func__, "Free heap %d\n", esp_get_free_heap_size());
 	ESP_LOGI(__func__, "vdd33 %d", esp_wifi_get_vdd33());
