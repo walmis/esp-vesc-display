@@ -375,7 +375,7 @@ void wifi_init_softap()
             .password = CONFIG_ESP_AP_PSK,
             .max_connection = 4,
             .authmode = WIFI_AUTH_WPA2_PSK,
-			.channel = 6
+			.channel = 9
 
         },
     };
@@ -1075,8 +1075,6 @@ void app_main(void) {
 
 	vTaskPrioritySet(NULL, 3);
 
-
-
 #ifdef CONFIG_ESP_VESC_STA
 	wifi_init_sta();
 #endif
@@ -1137,10 +1135,10 @@ void app_main(void) {
 
 	xTaskCreate(&net_proxy_task, "net_proxy_task", 1500, NULL, 3, NULL);
 
-	ota_tftp_init_server(69, 7);
+	//ota_tftp_init_server(69, 7);
 
 	extern void netcat_ota_task(void* port);
-	xTaskCreate(&netcat_ota_task, "netcat-ota", 1500, (void*)120, 3, NULL);
+	xTaskCreate(&netcat_ota_task, "netcat-ota", 1500, (void*)120, 7, NULL);
 
 	ESP_LOGI(__func__, "Free heap %d\n", esp_get_free_heap_size());
 	ESP_LOGI(__func__, "vdd33 %d", esp_wifi_get_vdd33());

@@ -56,7 +56,7 @@ static inline uint32_t utils_get_dt(uint32_t* prev) {
     return dt;
 }
 
-static int utils_median_5_int(int a, int b, int c, int d, int e)
+static inline int utils_median_5_int(int a, int b, int c, int d, int e)
 {
     return b < a ? d < c ? b < d ? a < e ? a < d ? e < d ? e : d
                                                  : c < a ? c : a

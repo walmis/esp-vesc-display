@@ -8,6 +8,9 @@ IDF_PATH=$(PWD)/ESP8266_RTOS_SDK
 
 PROJECT_NAME := blackmagic
 
+CFLAGS = -O2 -Wno-error=maybe-uninitialized
+CPPFLAGS = -O2
+
 include $(IDF_PATH)/make/project.mk
 
 tftpflash: build/$(PROJECT_NAME).bin
