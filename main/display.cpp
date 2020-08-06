@@ -65,7 +65,7 @@ static lv_obj_t* cruise_control_icon;
 int8_t g_set_power_level = 3;
 
 
-#define DOUBLE_BUFFER
+//#define DOUBLE_BUFFER
 
 #ifdef DOUBLE_BUFFER
 struct flush_data {
@@ -713,11 +713,11 @@ void display_run() {
 
     while(1) {
     	LVGL_LOCK();
-    	lv_task_handler();
+    	uint32_t time_till_next_ms = lv_task_handler();
     	LVGL_UNLOCK();
-		vTaskDelay(1);
+		//vTaskDelay(1);
 		//taskYIELD();
-    	//vTaskDelayUntil(&prevTick, 10 / portTICK_PERIOD_MS);
+    	vTaskDelayUntil(&prevTick, time_till_next_ms / portTICK_PERIOD_MS);
     }
 }
 
@@ -797,7 +797,7 @@ void display_show_menu() {
 					sprintf(msg, "Curr: %d\nMin: %d Max: %d", adc, state->thr_min, state->thr_max);
 					lv_msgbox_set_text(state->msgbox, msg);
 
-				}, 50, LV_TASK_PRIO_MID, msgbox1);
+				}, 50, LV_TASK_PRIO_LOW, msgbox1);
 
 				State* state = new State;
 				state->msgbox = msgbox1;
