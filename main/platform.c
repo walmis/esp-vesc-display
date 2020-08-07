@@ -22,6 +22,8 @@
 #include <sys/time.h>
 #include <sys/unistd.h>
 
+#include <lvgl.h>
+
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -47,6 +49,7 @@
 #include "driver/gpio.h"
 #include "driver/adc.h"
 #include "esp8266/uart_register.h"
+#include "esp_task_wdt.h"
 
 #include <lwip/sockets.h>
 
@@ -69,7 +72,6 @@
 
 static nvs_handle g_nvs_handle;
 static uint32_t t_last_packet;
-static xQueueHandle uart_events_queue;
 static xQueueHandle dbg_queue;
 
 static uint8_t g_motor_armed;
@@ -83,6 +85,8 @@ static int g_vesc_sock;
 struct mc_data mc_data;
 static mc_configuration mcconf;
 static bool have_mcconf;
+static bool mcconf_updated;
+static bool mcdata_updated;
 
 static double stored_odo;
 static int prev_odo;
@@ -95,6 +99,7 @@ static float rpm_to_kmh;
 static float g_cc_current_set;
 static float g_cc_rpm_set;
 static uint8_t g_cc_enabled;
+static bool g_braking;
 
 static int g_tcp_serv_sock;
 static int g_udp_serv_sock;
@@ -130,25 +135,10 @@ int platform_hwversion(void) {
 void dbg_task(void *parameters) {
 	dbg_queue = xQueueCreate(1024, 1);
 
+	uint8_t b;
 	while(1) {
-
-		char tmp;
-		if(xQueuePeek(dbg_queue, &tmp, 10)) {
-			struct netbuf* nb = netbuf_new();
-
-			int waiting = uxQueueMessagesWaiting(dbg_queue);
-			char* mem = netbuf_alloc(nb, waiting);
-
-			while(waiting--) {
-				xQueueReceive(dbg_queue, mem, 0);
-				http_debug_putc(*mem, *mem=='\n' ? 1 : 0);
-				mem++;
-			}
-			//netconn_sendto(nc, nb, &ip, 6666);
-
-			netbuf_delete(nb);
-		}
-
+		xQueueReceive(dbg_queue, &b, portMAX_DELAY);
+		http_debug_putc(b, b=='\n' ? 1 : 0);
 	}
 }
 
@@ -380,6 +370,7 @@ void wifi_init_softap()
         },
     };
 
+
     uint64_t chipid;
     esp_read_mac((uint8_t*)&chipid, ESP_MAC_WIFI_SOFTAP);
 
@@ -388,6 +379,9 @@ void wifi_init_softap()
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
     ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_AP, &wifi_config));
     ESP_ERROR_CHECK(esp_wifi_start());
+
+	esp_wifi_set_protocol(ESP_IF_WIFI_AP, WIFI_PROTOCOL_11G);
+
 }
 #endif
 
@@ -490,11 +484,13 @@ void update_motor_control() {
 
 		//pressing brakes immediately disables cruise control
 		if(g_cc_enabled && adc < ADC_BRAKE_THRESHOLD && !g_brake_controls_disabled) {
+			g_braking = 1;
 			g_cc_enabled = false;
+		} else if(adc > ADC_BRAKE_THRESHOLD) {
+			g_braking = 0;
 		}
 
 		if(g_cc_enabled) {
-			display_set_cruise_icon(1);
 			motor_set_current(g_cc_current_set);
 		} else {
 			static float brake_ramp;
@@ -502,20 +498,13 @@ void update_motor_control() {
 			static uint32_t last_update;
 			uint32_t dt = utils_get_dt(&last_update);
 
-			display_set_cruise_icon(0);
-
 			if(!g_motor_armed) {
 				motor_set_current_rel(0);
 			} else {
-				if(adc < 10 && !g_brake_controls_disabled) {
-					display_set_brake_icon(1);
-
+				if(g_braking && !g_brake_controls_disabled) {
 					utils_step_towards(&brake_ramp, 1.0, (float)dt / BRAKE_RAMP_UP_MS);
-
 					motor_set_current_brake_rel(brake_ramp);
-
 				} else {
-					display_set_brake_icon(0);
 					// if brake signal released, release brake immediately
 					brake_ramp = 0;
 				}
@@ -541,9 +530,7 @@ void update_motor_control() {
 				}
 			}
 		}
-
 	}
-
 }
 
 const char* faultToStr(mc_fault_code fault)
@@ -593,6 +580,7 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 			display_show_message("Incompatible vesc version");
 		} else {
 			have_mcconf = true;
+			mcconf_updated = true;
 
 			ESP_LOGI(__func__, "mc_configuration size %d", sizeof(mc_configuration));
 			ESP_LOGI(__func__, "Battery Ah %f, cells: %d", 	mcconf.si_battery_ah, mcconf.si_battery_cells);
@@ -604,14 +592,6 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 				g_max_watts = 4.2f * mcconf.si_battery_cells * mcconf.l_in_current_max;
 				ESP_LOGI(__func__, "Detected max power %d W", (int)g_max_watts);
 			}
-
-			display_set_mot_current_minmax(mcconf.l_current_min, mcconf.l_current_max);
-			display_set_bat_limits(mcconf.l_battery_cut_start, mcconf.l_battery_cut_end);
-
-			vesc_update_power_level();
-
-			display_set_connected(1);
-			motor_arm();
 
 			tach_to_km = (((1.0f * mcconf.si_gear_ratio) / (mcconf.si_motor_poles * 3.0f)) * (mcconf.si_wheel_diameter * M_PI)) / 1000.0f;
         	rpm_to_kmh =  1.0f / (((mcconf.si_motor_poles / 2.0f) * 60.0f *	mcconf.si_gear_ratio) / (mcconf.si_wheel_diameter * M_PI) / 3.6f);
@@ -744,96 +724,127 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
             }
         }
 
-		static uint32_t prev_update;
-		uint32_t dt = utils_get_dt(&prev_update);
-
-		static float current_motor_filt;
-		static float duty_now_filt;
-		static float v_in_filt;
-		static float curr_in_filt;
-		static float power_filt;
-
-		float alpha = (float)dt / (dt + 100); // 100ms filter
-
-		UTILS_LP_FAST(current_motor_filt, mc_data.current_motor, alpha);
-		UTILS_LP_FAST(duty_now_filt, mc_data.duty_now, alpha);
-		UTILS_LP_FAST(v_in_filt, mc_data.v_in, alpha);
-		UTILS_LP_FAST(curr_in_filt, mc_data.current_in, alpha);
-		UTILS_LP_FAST(power_filt, mc_data.current_in * mc_data.v_in, alpha);
-
-        display_set_duty(duty_now_filt);
-        display_set_mos_temp(mc_data.temp_mos);
-        display_set_curr_power(power_filt);
-        display_set_bat_info(v_in_filt, curr_in_filt);
-		
-        display_set_mot_current(current_motor_filt);
-        display_set_energy(mc_data.amp_hours_charged, mc_data.amp_hours);
-
-
-        float trip_km = mc_data.tachometer * tach_to_km;
-        display_set_trip(trip_km);
-
-        static uint32_t trip_time_ms;
-        static uint32_t prev_trip_timestamp;
-
-        display_set_mos_temp(mc_data.temp_mos);
-
-        if(abs(mc_data.rpm) > 50) {
-        	trip_time_ms += (platform_time_ms() - prev_trip_timestamp);
-
-        	display_set_triptime(trip_time_ms);
-
-        	float trip_km = (mc_data.tachometer - g_initial_tach) * tach_to_km;
-        	//ESP_LOGI(__func__, "trip rel %f %f", trip_km, (((float)trip_time_ms/1000.0f)/3600.0f));
-			if(trip_time_ms != 0)
-        		display_set_avgspeed(trip_km / (((float)trip_time_ms/1000.0f)/3600.0f));
-        }
-
-        prev_trip_timestamp = platform_time_ms();
-		if(rpm_to_kmh != 0) {
-			float kmh = mc_data.rpm * rpm_to_kmh;
-			static float speed_filt;
-			UTILS_LP_FAST(speed_filt, kmh, alpha);
-        	display_set_speed(speed_filt);
-			if(speed_filt < 10) {
-				g_cc_enabled = false;
-			}
-		}
-
-
-        if(prev_odo == 0) {
-        	prev_odo = mc_data.tachometer;
-        } else {
-        	if( mcconf.si_gear_ratio != 0 && mcconf.si_motor_poles != 0) {
-        		int diff = (mc_data.tachometer - prev_odo);
-        		if(diff > 0) {
-        			stored_odo += (double)diff * tach_to_km;
-		        	prev_odo = mc_data.tachometer;
-        		}
-        	}
-        }
-        display_set_odo(stored_odo);
-
-        if(platform_time_ms() - t_odo_save > 5000 && fabsf(read_odometer()-stored_odo) > 0.05f) {
-        	ESP_LOGI(__func__, "Store odo value %f", stored_odo);
-
-        	esp_err_t ret = store_odometer(stored_odo);
-        	if(ret != ESP_OK) {
-        		display_show_message("ODO store fail");
-        	}
-        	t_odo_save = platform_time_ms();
-        }
-
 		//if(!g_tcp_client_sock) {
 			//uint8_t req = COMM_GET_VALUES;
 			//packet_send_packet(&req, 1, PKT_VESC);
 			update_motor_control();
+
+			mcdata_updated = true;
 		//}
 	}
 	}
 }
 
+// must be called from LVGL thread
+void _display_update_mcdata() {
+	static uint32_t prev_update;
+	uint32_t dt = utils_get_dt(&prev_update);
 
+	static float current_motor_filt;
+	static float duty_now_filt;
+	static float v_in_filt;
+	static float curr_in_filt;
+	static float power_filt;
+	static float speed_filt;
+
+	display_set_brake_icon(g_braking);
+	display_set_cruise_icon(g_cc_enabled);
+
+	float alpha = (float)dt / (dt + 100); // 100ms filter
+
+	UTILS_LP_FAST(current_motor_filt, mc_data.current_motor, alpha);
+	UTILS_LP_FAST(duty_now_filt, mc_data.duty_now, alpha);
+	UTILS_LP_FAST(v_in_filt, mc_data.v_in, alpha);
+	UTILS_LP_FAST(curr_in_filt, mc_data.current_in, alpha);
+	UTILS_LP_FAST(power_filt, mc_data.current_in * mc_data.v_in, alpha);
+
+	display_set_duty(duty_now_filt);
+	display_set_mos_temp(mc_data.temp_mos);
+	display_set_curr_power(power_filt);
+	display_set_bat_info(v_in_filt, curr_in_filt);
+	
+	display_set_mot_current(current_motor_filt);
+	display_set_energy(mc_data.amp_hours_charged, mc_data.amp_hours);
+
+	float trip_km = mc_data.tachometer * tach_to_km;
+	display_set_trip(trip_km);
+
+	static uint32_t trip_time_ms;
+	static uint32_t prev_trip_timestamp;
+
+	display_set_mos_temp(mc_data.temp_mos);
+
+	if(abs(mc_data.rpm) > 50) {
+		trip_time_ms += (platform_time_ms() - prev_trip_timestamp);
+
+		display_set_triptime(trip_time_ms);
+
+		float trip_km = (mc_data.tachometer - g_initial_tach) * tach_to_km;
+		//ESP_LOGI(__func__, "trip rel %f %f", trip_km, (((float)trip_time_ms/1000.0f)/3600.0f));
+		if(trip_time_ms != 0) {
+			display_set_avgspeed(trip_km / (((float)trip_time_ms/1000.0f)/3600.0f));
+		}
+	}
+
+	prev_trip_timestamp = platform_time_ms();
+	if(rpm_to_kmh != 0) {
+		float kmh = mc_data.rpm * rpm_to_kmh;
+		UTILS_LP_FAST(speed_filt, kmh, alpha);
+		display_set_speed(speed_filt);
+		if(speed_filt < 10) {
+			g_cc_enabled = false;
+		}
+	}
+
+
+	if(prev_odo == 0) {
+		prev_odo = mc_data.tachometer;
+	} else {
+		if( mcconf.si_gear_ratio != 0 && mcconf.si_motor_poles != 0) {
+			int diff = (mc_data.tachometer - prev_odo);
+			if(diff > 0) {
+				stored_odo += (double)diff * tach_to_km;
+				prev_odo = mc_data.tachometer;
+			}
+		}
+	}
+	display_set_odo(stored_odo);
+
+	if(platform_time_ms() - t_odo_save > 5000 && fabsf(read_odometer()-stored_odo) > 0.05f) {
+		ESP_LOGI(__func__, "Store odo value %f", stored_odo);
+
+		esp_err_t ret = store_odometer(stored_odo);
+		if(ret != ESP_OK) {
+			display_show_message("ODO store fail");
+		}
+		t_odo_save = platform_time_ms();
+	}
+}
+
+// must be called from LVGL thread
+void _display_update_mcconf() {
+	display_set_mot_current_minmax(mcconf.l_current_min, mcconf.l_current_max);
+	display_set_bat_limits(mcconf.l_battery_cut_start, mcconf.l_battery_cut_end);
+	vesc_update_power_level();
+	motor_arm();
+}
+
+static void display_update_run(lv_task_t* task) {
+	if(mcconf_updated) {
+		_display_update_mcconf();
+		mcconf_updated = false;
+	}
+	if(mcdata_updated) {
+		_display_update_mcdata();
+		mcdata_updated = false;
+	}
+
+	display_set_connected(have_mcconf);
+	
+	//vTaskDelay(1); //to keep lower priority tasks from starving
+	esp_task_wdt_reset();
+	taskYIELD();
+}
 
 //PUBLIC
 uint16_t get_throttle_adc() {
@@ -884,7 +895,6 @@ void vesc_poll_data() {
 
 #ifdef CONFIG_ESP_VESC_UART
 void vesc_uart_task(void* param) {
-	uart_event_t event;
 	uint8_t buffer[128];
 	unsigned long prevWake = 0;
 	while(1) {
@@ -1048,20 +1058,17 @@ void app_main(void) {
 #endif
 	//esp_log_set_putchar(putc_noop);
 
-	/* we are not using uart rx, disable interrupt */
-	//uart_disable_rx_intr(0);
+
 	xTaskCreate(&dbg_task, "dbg_main", 800, NULL, 4, NULL);
 
 
 #ifdef CONFIG_ESP_VESC_UART
 
-	uart_driver_install(0, 512, 256, 16, &uart_events_queue, 0);
+	uart_driver_install(0, 512, 256, 16, 0, 0);
 	uart_set_baudrate(0, CONFIG_ESP_UART_BAUD);
 #else
-	//disable uart interrupts
-	uart_intr_config_t conf = {};
-	conf.intr_enable_mask = 0;
-	uart_intr_config(0, &conf);
+	/* we are not using uart rx, disable interrupt */
+	uart_disable_rx_intr(0);
 #endif
 
 	esp_err_t ret = nvs_flash_init();
@@ -1073,7 +1080,7 @@ void app_main(void) {
 
 	ESP_ERROR_CHECK(nvs_open("config", NVS_READWRITE, &g_nvs_handle));
 
-	vTaskPrioritySet(NULL, 3);
+	vTaskPrioritySet(NULL, 2);
 
 #ifdef CONFIG_ESP_VESC_STA
 	wifi_init_sta();
@@ -1087,8 +1094,6 @@ void app_main(void) {
 	adc_config.mode = ADC_READ_TOUT_MODE;
 	adc_config.clk_div = 8;
 	ESP_ERROR_CHECK(adc_init(&adc_config));
-
-
 
 	httpd_start();
 
@@ -1135,13 +1140,13 @@ void app_main(void) {
 
 	xTaskCreate(&net_proxy_task, "net_proxy_task", 1500, NULL, 3, NULL);
 
-	//ota_tftp_init_server(69, 7);
-
 	extern void netcat_ota_task(void* port);
-	xTaskCreate(&netcat_ota_task, "netcat-ota", 1500, (void*)120, 7, NULL);
+	xTaskCreate(&netcat_ota_task, "netcat-ota", 1500, (void*)120, 2, NULL);
 
 	ESP_LOGI(__func__, "Free heap %d\n", esp_get_free_heap_size());
 	ESP_LOGI(__func__, "vdd33 %d", esp_wifi_get_vdd33());
+
+	lv_task_create(display_update_run, LV_DISP_DEF_REFR_PERIOD, LV_TASK_PRIO_MID, NULL);
 
 	display_run();
 }

@@ -15,6 +15,8 @@
 #include "esp_system.h"
 #include "utils.h"
 
+#include <string>
+
 LV_IMG_DECLARE(brake);
 LV_IMG_DECLARE(cruise_control_img);
 
@@ -64,8 +66,10 @@ static lv_obj_t* cruise_control_icon;
 
 int8_t g_set_power_level = 3;
 
+static bool displ_message_updated;
+static std::string displ_message_curr;
 
-//#define DOUBLE_BUFFER
+#define DOUBLE_BUFFER
 
 #ifdef DOUBLE_BUFFER
 struct flush_data {
@@ -83,9 +87,8 @@ static SemaphoreHandle_t lvgl_mutex;
 static lv_disp_drv_t disp_drv;               /*Descriptor of a display driver*/
 static lv_disp_buf_t disp_buf;
 
-
-#define LVGL_LOCK()   xSemaphoreTakeRecursive(lvgl_mutex, portMAX_DELAY );
-#define LVGL_UNLOCK() xSemaphoreGiveRecursive(lvgl_mutex );
+#define LVGL_LOCK()   //xSemaphoreTakeRecursive(lvgl_mutex, portMAX_DELAY );
+#define LVGL_UNLOCK() //xSemaphoreGiveRecursive(lvgl_mutex );
 
 #define ON_CHANGED(x, y) { static typeof(x) _value; typeof(x) value = x; if(_value != value) { _value = value; y }}
 
@@ -105,7 +108,7 @@ void IRAM_ATTR lvgl_flush_task(void* parm) {
 		xQueueReceive(flush_q, &args, portMAX_DELAY);
 		//ESP_LOGI(__func__, "flush");
 		//printf("win2 x1:%d y1:%d x2:%d y2:%d %p\n", args.area.x1, args.area->y1, args.area->x2, args.area->y2, args.color_p);
-
+		uint32_t start = esp_get_time();
 #ifdef CONFIG_ESP_TFT_ILI9341
 		ILI9341_setWindow(args.area.x1, args.area.y1, args.area.x2, args.area.y2);
 #elif CONFIG_ESP_TFT_ILI9225
@@ -120,7 +123,7 @@ void IRAM_ATTR lvgl_flush_task(void* parm) {
 		spi_endTransaction();
 
 		lv_disp_flush_ready(args.disp);         /* Indicate you are ready with the flushing*/
-
+		//printf("flush %dpx %d us\n", count, esp_get_time()-start);
 		if(flush_notify_task_handle) {
 			xTaskNotifyGive(flush_notify_task_handle);
 			flush_notify_task_handle = 0;
@@ -136,7 +139,6 @@ static IRAM_ATTR void lvgl_flush(lv_disp_drv_t * disp, const lv_area_t * area, l
 	args.area = *area;
 	args.color_p = color_p;
 
-	//ESP_LOGI(__func__, "flush");
 	xQueueSend(flush_q, &args, portMAX_DELAY);
 #else
 #ifdef CONFIG_ESP_TFT_ILI9341
@@ -233,7 +235,7 @@ extern "C"
 void display_setup() {
 	lvgl_mutex = xSemaphoreCreateRecursiveMutex();
 #ifdef DOUBLE_BUFFER
-	flush_q = xQueueCreate(1, sizeof(struct flush_data));
+	flush_q = xQueueCreate(2, sizeof(struct flush_data));
 #endif
 	spi_init();
 
@@ -277,12 +279,7 @@ void display_setup() {
 #endif
     lv_disp_drv_init(&disp_drv);          /*Basic initialization*/
     disp_drv.flush_cb = lvgl_flush;    /*Set your driver function*/
-#ifdef DOUBLE_BUFFER
-	disp_drv.wait_cb = [](lv_disp_drv_t* disp) {
-		flush_notify_task_handle = xTaskGetCurrentTaskHandle();
-		ulTaskNotifyTake(pdTRUE, portMAX_DELAY );
-	};
-#endif
+
     //disp_drv.monitor_cb = monitor_cb;
     disp_drv.buffer = &disp_buf;          /*Assign the buffer to the display*/
     disp = lv_disp_drv_register(&disp_drv);      /*Finally register the driver*/
@@ -383,6 +380,7 @@ void display_setup() {
     lbl_speed = lv_label_create(screen, NULL);
 
     lv_label_set_text(lbl_speed, "00");
+	lv_obj_set_auto_realign(lbl_speed, true);
 	lv_obj_set_style_local_text_font(lbl_speed, 0, LV_STATE_DEFAULT, &lv_font_montserrat_48);
 
     lv_obj_align(lbl_speed, NULL, LV_ALIGN_CENTER, 0, 0);
@@ -418,30 +416,24 @@ void display_setup() {
 	lv_obj_set_style_local_pad_all(odo_container, 0, LV_STATE_DEFAULT, 4);
 
 
-	//lv_obj_set_drag(cont, true);
 	lv_cont_set_fit(odo_container, LV_FIT_TIGHT);
-	//lv_obj_set_style(cont, &cont_style);
 
 	lbl_func = lv_label_create(odo_container, NULL);
-	//lv_label_set_style(lbl_func, LV_LABEL_STYLE_MAIN, &font_22_style);
 	lv_label_set_text(lbl_func, "ODO");
 	lv_obj_set_style_local_text_font(lbl_func, 0, LV_STATE_DEFAULT, &lv_font_montserrat_16);
 
 	lv_obj_align(lbl_func, NULL, LV_ALIGN_IN_BOTTOM_LEFT, 2, -2);
 
 	lbl_odo = lv_label_create(odo_container, NULL);
-	//lv_label_set_style(lbl_odo, LV_LABEL_STYLE_MAIN, &medium_text_style);
 
 	lv_label_set_text(lbl_odo, "00000");
 	lv_obj_align(lbl_odo, lbl_func, LV_ALIGN_OUT_RIGHT_MID, 2, 0);
 
-	//lv_cont_set_style(cont, LV_CONT_STYLE_MAIN, theme->style.label.prim);
 	lv_cont_set_layout(odo_container, LV_LAYOUT_ROW_MID);
 	lv_cont_set_fit2(odo_container, LV_FIT_TIGHT, LV_FIT_TIGHT);
 	lv_obj_align(odo_container, 0, LV_ALIGN_IN_BOTTOM_LEFT, 2, -2);
 	lv_obj_set_auto_realign(odo_container, 1);
     
-
     
 	lv_obj_t* trp_info_container = lv_cont_create(screen, 0);
 	lv_cont_set_fit(trp_info_container, LV_FIT_TIGHT);
@@ -463,8 +455,6 @@ void display_setup() {
 	lv_obj_set_auto_realign(trp_info_container, 1);
 
     
-
-
 //    lbl_bat = lv_label_create(lv_disp_get_layer_top(disp), NULL);
 //    //lv_label_set_style(lbl_trip_val, LV_LABEL_STYLE_MAIN, &font_22_style);
 //    lv_label_set_text(lbl_bat, LV_SYMBOL_BATTERY_3 " 44.1V 2.3A");
@@ -516,13 +506,11 @@ void display_setup() {
 	lv_obj_set_style_local_text_font(statusbar, 0, LV_STATE_DEFAULT, &lv_font_montserrat_16);
 
     lbl_wifisymbol = lv_label_create(statusbar, NULL);
-    //lv_label_set_style(lbl, LV_LABEL_STYLE_MAIN, &font_test_style);
     lv_label_set_text(lbl_wifisymbol, LV_SYMBOL_WIFI);
 	lv_obj_set_style_local_opa_scale(lbl_wifisymbol, 0, LV_STATE_DEFAULT, 64);
 	
 
     lv_obj_t* lbl_battsymbol = lv_label_create(statusbar, NULL);
-    //lv_label_set_style(lbl, LV_LABEL_STYLE_MAIN, &font_test_style);
     lv_label_set_text(lbl_battsymbol, LV_SYMBOL_BATTERY_3);
 
     lbl_volts = lv_label_create(statusbar, NULL);
@@ -548,10 +536,11 @@ void display_setup() {
     /* ********** */
 
 	lbl_message = lv_label_create(screen, NULL);
-	//lv_label_set_style(lbl_message, LV_LABEL_STYLE_MAIN, &font_10_style);
 	lv_label_set_recolor(lbl_message, true);
 	lv_label_set_static_text(lbl_message, "");
-	lv_obj_align(lbl_message, NULL, LV_ALIGN_IN_BOTTOM_LEFT, 4, -21);
+	lv_obj_set_style_local_text_color(lbl_message, 0, LV_STATE_DEFAULT, LV_COLOR_RED);
+
+	lv_obj_align(lbl_message, odo_container, LV_ALIGN_OUT_TOP_LEFT, 4, 0);
 
 	power_label = lv_label_create(screen, 0);
 	lv_label_set_recolor(power_label, true);
@@ -564,12 +553,6 @@ void display_setup() {
 
 	} else {
 		lv_obj_align(power_label, linemeter, LV_ALIGN_IN_TOP_MID, 0, -4);
-		//static lv_style_t roboto;
-		//lv_style_copy(&roboto, &font_22_style);
-    	//roboto.text.font = &lv_font_roboto_12;
-		//lv_obj_set_style(power_label, &roboto);
-		//lv_obj_move_background(power_label);
-		
 	}
 
 	lv_obj_set_event_cb(power_label, [](struct _lv_obj_t * obj, lv_event_t event) {
@@ -588,14 +571,16 @@ void display_setup() {
 	lv_img_set_src(brake_icon, &brake);
 	lv_obj_align(brake_icon, odo_container, LV_ALIGN_OUT_TOP_LEFT, 0, 0);
 	lv_obj_set_hidden(brake_icon, true);
+
+	lv_obj_set_style_local_image_recolor_opa(brake_icon, 0, LV_STATE_DEFAULT, 255);
 	lv_obj_set_style_local_image_recolor(brake_icon, 0, LV_STATE_DEFAULT, LV_COLOR_RED);
 
 	cruise_control_icon = lv_img_create(screen, 0);
 	lv_img_set_src(cruise_control_icon, &cruise_control_img);
 	lv_obj_align(cruise_control_icon, trp_info_container, LV_ALIGN_OUT_TOP_RIGHT, 0, 0);
 	lv_obj_set_hidden(cruise_control_icon, true);
-	lv_obj_set_style_local_image_recolor(cruise_control_icon, 0, LV_STATE_DEFAULT, LV_COLOR_NAVY);
-	//lv_obj_set_style(cruise_control_icon, blue_style);
+	lv_obj_set_style_local_image_recolor_opa(cruise_control_icon, 0, LV_STATE_DEFAULT, 255);
+	lv_obj_set_style_local_image_recolor(cruise_control_icon, 0, LV_STATE_DEFAULT, LV_COLOR_GREEN);
 
 	lv_obj_move_background(linemeter);
 	lv_obj_move_foreground(lbl_mah);
@@ -706,18 +691,22 @@ void update_data(lv_task_t* task) {
 	}
 }
 
+void update_label_task(lv_task_t* task) {
+	if(displ_message_updated) {
+		lv_label_set_text(lbl_message, displ_message_curr.c_str());
+		displ_message_updated = false;
+	}
+}
+
 void display_run() {
 	TickType_t prevTick = 0;
 	
-	lv_task_create(update_data, 2500, LV_TASK_PRIO_MID, 0);
+	lv_task_create(update_data, 2500, LV_TASK_PRIO_LOW, 0);
+	lv_task_create(update_label_task, 100, LV_TASK_PRIO_LOW, 0);
 
     while(1) {
-    	LVGL_LOCK();
     	uint32_t time_till_next_ms = lv_task_handler();
-    	LVGL_UNLOCK();
-		//vTaskDelay(1);
-		//taskYIELD();
-    	vTaskDelayUntil(&prevTick, time_till_next_ms / portTICK_PERIOD_MS);
+		vTaskDelay(time_till_next_ms / portTICK_PERIOD_MS);
     }
 }
 
@@ -740,6 +729,7 @@ void display_show_menu() {
 			if(event == LV_EVENT_CLICKED) {
 				struct State {
 					lv_obj_t* msgbox;
+					lv_task_t* task;
 					uint16_t thr_min = 0xffff;
 					uint16_t thr_max = 0;
 					uint8_t motor_armed;
@@ -753,35 +743,33 @@ void display_show_menu() {
 				//lv_obj_set_width(msgbox1, 200);
 				lv_obj_set_event_cb(msgbox1, [](lv_obj_t* obj, lv_event_t event) {
 					ESP_LOGI("msgbox1 event", "%d %d", event, lv_msgbox_get_active_btn(obj));
-					if(obj->user_data) {
-						lv_task_t* task = (lv_task_t*)obj->user_data;
-						State* state = (State*)task->user_data;
-					
-						if(event == LV_EVENT_CLICKED) {
-							uint8_t btn = lv_msgbox_get_active_btn(obj);
-							if(btn == 0) {
+					assert(obj->user_data);
 
-								state->thr_max = 0;
-								state->thr_min = 0xFFFF;							
-							}
-							if(btn == 1) {
-								set_throttle_calibration(state->thr_min, state->thr_max);
-								lv_msgbox_start_auto_close(obj, 0);
-							}
-							if(btn == 2 /* cancel */) {
-								lv_msgbox_start_auto_close(obj, 0);
-							}
-						}
-						if(event == LV_EVENT_DELETE) {
-							lv_group_remove_all_objs(ctrl_group);
-							lv_group_add_obj(ctrl_group, list);
+					State* state = (State*)obj->user_data;
 
-							if(state->motor_armed)
-								motor_arm();
-							lv_task_t* task = (lv_task_t*)lv_obj_get_user_data(obj);
-							delete state;
-							lv_task_del(task);
+					if(event == LV_EVENT_CLICKED) {
+						uint8_t btn = lv_msgbox_get_active_btn(obj);
+						if(btn == 0) {
+
+							state->thr_max = 0;
+							state->thr_min = 0xFFFF;							
 						}
+						if(btn == 1) {
+							set_throttle_calibration(state->thr_min, state->thr_max);
+							lv_msgbox_start_auto_close(obj, 0);
+						}
+						if(btn == 2 /* cancel */) {
+							lv_msgbox_start_auto_close(obj, 0);
+						}
+					}
+					if(event == LV_EVENT_DELETE) {
+						lv_group_remove_all_objs(ctrl_group);
+						lv_group_add_obj(ctrl_group, list);
+						if(state->motor_armed)
+							motor_arm();
+						lv_task_del(state->task);
+
+						delete state;
 					}
 				});
 				lv_obj_align(msgbox1, NULL, LV_ALIGN_CENTER, 0, 0); /*Align to the corner*/
@@ -797,15 +785,15 @@ void display_show_menu() {
 					sprintf(msg, "Curr: %d\nMin: %d Max: %d", adc, state->thr_min, state->thr_max);
 					lv_msgbox_set_text(state->msgbox, msg);
 
-				}, 50, LV_TASK_PRIO_LOW, msgbox1);
+				}, 70, LV_TASK_PRIO_LOW, msgbox1);
 
 				State* state = new State;
 				state->msgbox = msgbox1;
 				state->motor_armed = motor_disarm();
+				state->task = task;
 				task->user_data = state;
-
-				lv_obj_set_user_data(msgbox1, task);
-				
+				msgbox1->user_data = state;
+			
 				lv_group_remove_all_objs(ctrl_group);
 				lv_group_add_obj(ctrl_group, msgbox1);
 				lv_group_focus_next(ctrl_group);
@@ -910,13 +898,15 @@ void display_set_odo(float dist) {
 }
 
 void display_show_message(const char* message) {
-	LVGL_LOCK();
-	if(!message) {
-		lv_label_set_text(lbl_message, "");
-	} else {
-		lv_label_set_text_fmt(lbl_message, "#ff0000 %s#", message);
+	if(strcmp(displ_message_curr.c_str(), message) != 0) {
+		displ_message_curr = message;
+		displ_message_updated = true;
 	}
-	LVGL_UNLOCK();
+	// if(!message) {
+	// 	lv_label_set_text(lbl_message, "");
+	// } else {
+	// 	lv_label_set_text_fmt(lbl_message, "#ff0000 %s#", message);
+	// }
 }
 
 void display_set_duty(float duty) {

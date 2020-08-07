@@ -19,7 +19,10 @@ void display_set_avgspeed(float avgspeed);
 void display_set_triptime(int trptime_ms);
 void display_set_fet_temp(float temp);
 void display_set_connected(bool connected);
+
+// this function is thread safe
 void display_show_message(const char* message);
+
 void display_set_power_level(int8_t power_level);
 
 void display_set_brake_icon(uint8_t show);

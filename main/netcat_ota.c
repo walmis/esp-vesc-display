@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include "esp_system.h"
 #include "sdkconfig.h"
+#include "esp_fast_boot.h"
 
 #define TAG "netcat-ota"
 
@@ -53,7 +54,7 @@ void netcat_ota_task(void* arg) {
         }
 
         SHOW_MESSAGE("OTA erasing...");
-        vTaskDelay(10);
+        vTaskDelay(20);
 
         err_t err = esp_ota_begin(update_part, OTA_SIZE_UNKNOWN, &update_handle);
         if (err != ESP_OK)
@@ -65,17 +66,14 @@ void netcat_ota_task(void* arg) {
 
         size_t total_bytes = 0;
 
-        uint8_t* buffer = malloc(2048);
+        uint8_t* buffer = malloc(256);
         int ret;
         do {
-            ret = recv(client, buffer, 2048, 0);
+            ret = recv(client, buffer, 256, 0);
             if(ret > 0) {
                 total_bytes += ret;
-                //vTaskDelay(1);
-
                 esp_ota_write(update_handle, buffer, ret);
                 SHOW_MESSAGE("OTA written %d bytes", total_bytes);
-                //taskYIELD();
             }
         } while(ret > 0);
 
@@ -88,7 +86,9 @@ void netcat_ota_task(void* arg) {
 			} else {
                 SHOW_MESSAGE("OTA OK!");
                 vTaskDelay(10);
-                esp_restart();
+                vTaskPrioritySet(0, 7);
+                //esp_restart();
+                esp_fast_boot_restart();
             }
         } else {
             SHOW_MESSAGE("OTA Failed");
