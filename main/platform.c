@@ -153,8 +153,7 @@ void _net_pkt_handler(unsigned char *data, unsigned int len) {
 
 void _net_pkt_tcp_snd_handler(unsigned char *data, unsigned int len) {\
 	if(g_tcp_client_sock != 0) {
-		int ret = send(g_tcp_client_sock, data, len, MSG_DONTWAIT);
-
+		send(g_tcp_client_sock, data, len, MSG_DONTWAIT);
 	}
 }
 void _net_pkt_udp_snd_handler(unsigned char *data, unsigned int len) {
@@ -307,6 +306,19 @@ void debug_putc(char c, int flush) {
 	}
 }
 
+int putc_noop(int c) {
+	return c;
+}
+
+int putc_remote(int c) {
+	if(c == '\n')
+		debug_putc('\r', 0);
+
+	debug_putc(c, c=='\n' ? 1 : 0);
+	return c;
+}
+
+
 void platform_set_baud(uint32_t baud) {
 	uart_set_baudrate(0, baud);
 	uart_set_baudrate(1, baud);
@@ -384,20 +396,6 @@ void wifi_init_softap()
 
 }
 #endif
-
-int putc_noop(int c) {
-	return c;
-}
-
-int putc_remote(int c) {
-	if(c == '\n')
-		debug_putc('\r', 0);
-
-	debug_putc(c, c=='\n' ? 1 : 0);
-	return c;
-}
-
-
 
 
 static void vesc_packet_send_cb(unsigned char *data, unsigned int len) {
@@ -479,24 +477,29 @@ void motor_set_current_rel(float current_rel) {
 }
 
 void update_motor_control() {
+	static float brake_ramp;
+	static float throttle_ramp;
+	static uint32_t last_update;
+	uint32_t dt;
+
 	if(have_mcconf) {
 		uint16_t adc = get_throttle_adc();
 
-		//pressing brakes immediately disables cruise control
-		if(g_cc_enabled && adc < ADC_BRAKE_THRESHOLD && !g_brake_controls_disabled) {
+		if(adc < ADC_BRAKE_THRESHOLD && !g_brake_controls_disabled) {
 			g_braking = 1;
-			g_cc_enabled = false;
-		} else if(adc > ADC_BRAKE_THRESHOLD) {
+		} else {
 			g_braking = 0;
+		}
+
+		//pressing brakes immediately disables cruise control
+		if(g_cc_enabled && g_braking) {
+			g_cc_enabled = false;
 		}
 
 		if(g_cc_enabled) {
 			motor_set_current(g_cc_current_set);
 		} else {
-			static float brake_ramp;
-			static float throttle_ramp;
-			static uint32_t last_update;
-			uint32_t dt = utils_get_dt(&last_update);
+			dt = utils_get_dt(&last_update);
 
 			if(!g_motor_armed) {
 				motor_set_current_rel(0);
@@ -724,13 +727,9 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
             }
         }
 
-		//if(!g_tcp_client_sock) {
-			//uint8_t req = COMM_GET_VALUES;
-			//packet_send_packet(&req, 1, PKT_VESC);
-			update_motor_control();
+		update_motor_control();
 
-			mcdata_updated = true;
-		//}
+		mcdata_updated = true;
 	}
 	}
 }
@@ -780,7 +779,6 @@ void _display_update_mcdata() {
 		display_set_triptime(trip_time_ms);
 
 		float trip_km = (mc_data.tachometer - g_initial_tach) * tach_to_km;
-		//ESP_LOGI(__func__, "trip rel %f %f", trip_km, (((float)trip_time_ms/1000.0f)/3600.0f));
 		if(trip_time_ms != 0) {
 			display_set_avgspeed(trip_km / (((float)trip_time_ms/1000.0f)/3600.0f));
 		}
@@ -791,7 +789,7 @@ void _display_update_mcdata() {
 		float kmh = mc_data.rpm * rpm_to_kmh;
 		UTILS_LP_FAST(speed_filt, kmh, alpha);
 		display_set_speed(speed_filt);
-		if(speed_filt < 10) {
+		if(speed_filt < 10.0f) {
 			g_cc_enabled = false;
 		}
 	}
@@ -831,18 +829,18 @@ void _display_update_mcconf() {
 
 static void display_update_run(lv_task_t* task) {
 	if(mcconf_updated) {
-		_display_update_mcconf();
 		mcconf_updated = false;
+		_display_update_mcconf();
 	}
 	if(mcdata_updated) {
-		_display_update_mcdata();
 		mcdata_updated = false;
+		_display_update_mcdata();
 	}
 
 	display_set_connected(have_mcconf);
 	
-	//vTaskDelay(1); //to keep lower priority tasks from starving
 	esp_task_wdt_reset();
+
 	taskYIELD();
 }
 
@@ -880,17 +878,13 @@ void set_throttle_calibration(uint16_t min, uint16_t max) {
 }
 
 void vesc_poll_data() {
-	display_set_connected(0);
-
 	uint8_t req = COMM_GET_MCCONF;
 	packet_send_packet(&req, 1, 0);
 
 	req = COMM_GET_VALUES;
 	packet_send_packet(&req, 1, 0);
 
-
 	update_motor_control();
-	//printf("heap %d\n", esp_get_free_heap_size());
 }
 
 #ifdef CONFIG_ESP_VESC_UART
@@ -1023,13 +1017,13 @@ void wifi_init_sta()
 #endif
 
 void on_cruise_control_request(uint8_t long_press) {
-	if(mc_data.rpm * rpm_to_kmh < 5 && long_press) {
+	if(mc_data.rpm * rpm_to_kmh < 5.0f && long_press) {
 		display_show_menu();
 	} else
 	if(g_cc_enabled) {
 		g_cc_enabled = false;
 	} else
-	if(mc_data.rpm * rpm_to_kmh > 10 && long_press && mc_data.current_motor > 0) {
+	if(mc_data.rpm * rpm_to_kmh > 10.0f && long_press && mc_data.current_motor > 0) {
 		g_cc_current_set = mc_data.current_motor;
 		g_cc_rpm_set = mc_data.rpm;
 		ESP_LOGI(__func__, "set cruise %f", g_cc_current_set);
