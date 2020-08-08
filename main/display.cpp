@@ -475,7 +475,6 @@ void display_setup() {
     //lv_obj_set_style(cont, &cont_style);
 
     lbl_pow = lv_label_create(cont, NULL);
-    //lv_label_set_style(lbl_pow, LV_LABEL_STYLE_MAIN, &medium_text_style);
     lv_label_set_text(lbl_pow, "0W");
 	lv_obj_set_style_local_text_font(lbl_pow, 0, LV_STATE_DEFAULT, &iosevka_20);
 	lv_obj_set_style_local_pad_all(lbl_pow, 0, LV_STATE_DEFAULT, 4);
@@ -488,12 +487,9 @@ void display_setup() {
 	lv_obj_set_style_local_pad_all(cont, 0, LV_STATE_DEFAULT, 4);
 
     lbl_mot_curr = lv_label_create(cont, NULL);
-    //lv_label_set_style(lbl_mot_curr, LV_LABEL_STYLE_MAIN, &medium_text_style);
     lv_label_set_text(lbl_mot_curr, "0A");
 	lv_obj_set_style_local_text_font(lbl_mot_curr, 0, LV_STATE_DEFAULT, &iosevka_20);
     lv_obj_set_auto_realign(lbl_mot_curr, 1);
-    //lv_cont_set_fit(cont, LV_FIT_TIGHT);
-    lv_cont_set_fit2(cont, LV_FIT_NONE, LV_FIT_TIGHT);
     lv_obj_set_width(cont, 60);
     lv_obj_align(lbl_mot_curr, 0, LV_ALIGN_CENTER, 0, 0);
 
