@@ -158,7 +158,11 @@ void spi_beginTransaction(uint8_t cspin) {
         spi_clk_div_t div = SPI_2MHz_DIV;
         spi_set_clk_div(HSPI_HOST, &div);
     } else {
+#ifdef CONFIG_ESP_TFT_ILI9341
+        spi_clk_div_t div = SPI_40MHz_DIV;
+#else
         spi_clk_div_t div = SPI_20MHz_DIV;
+#endif
         spi_set_clk_div(HSPI_HOST, &div);
     }
 #endif

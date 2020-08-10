@@ -406,7 +406,9 @@ typedef void * lv_indev_drv_user_data_t;            /*Type of user data in the i
 								LV_FONT_DECLARE(iosevka_num) \
 								LV_FONT_DECLARE(iosevka_20) \
 								LV_FONT_DECLARE(iosevka_14) \
-                                LV_FONT_DECLARE(iosevka_num_60)
+                                LV_FONT_DECLARE(iosevka_num_60) \
+                                LV_FONT_DECLARE(large_80) \
+                                LV_FONT_DECLARE(Sceta_20) 
 
 /* Enable it if you have fonts with a lot of characters.
  * The limit depends on the font size, font face and bpp

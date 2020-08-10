@@ -152,20 +152,24 @@ void ILI9341_init() {
     cfg.intr_type = GPIO_INTR_DISABLE;
     cfg.mode = GPIO_MODE_OUTPUT;
     cfg.pin_bit_mask = BIT(CONFIG_GPIO_TFT_CS) | BIT(CONFIG_GPIO_TFT_DC);
-#if CONFIG_GPIO_TFT_LED >= 0
-    cfg.pin_bit_mask |= BIT(CONFIG_GPIO_TFT_LED);
-#endif
+
 #if CONFIG_GPIO_TFT_RST >= 0
     cfg.pin_bit_mask |= BIT(CONFIG_GPIO_TFT_RST);
 #endif
     gpio_config(&cfg);
-#if CONFIG_GPIO_TFT_LED >= 0
-    gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_LED, 1);
-#endif
+
     gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_DC, 1);
     gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_CS, 1);
+    
+#if CONFIG_GPIO_TFT_RST >= 0
+    gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_RST, 0);
+#endif
 
     vTaskDelay(50 / portTICK_PERIOD_MS);
+
+#if CONFIG_GPIO_TFT_RST >= 0
+    gpio_set_level((gpio_num_t) CONFIG_GPIO_TFT_RST, 1);
+#endif
 
     spi_beginTransaction(CONFIG_GPIO_TFT_CS);
 

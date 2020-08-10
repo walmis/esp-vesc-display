@@ -371,18 +371,22 @@ void display_setup() {
 	lv_scr_load(screen); 
 
 #ifdef CONFIG_ESP_TFT_ILI9341
-	screen = lv_obj_create(screen, 0);
-	lv_obj_set_size(screen, 320, 176);
-    lv_obj_align(screen, NULL, LV_ALIGN_IN_TOP_MID, 0, 0);
-	lv_obj_set_style(screen, theme->style.scr);
+	// screen = lv_obj_create(screen, 0);
+	// lv_obj_set_size(screen, 320, 176);
+    // lv_obj_align(screen, NULL, LV_ALIGN_IN_TOP_MID, 0, 0);
+	// lv_obj_set_style(screen, theme->style.scr);
 #endif
+
 
     lbl_speed = lv_label_create(screen, NULL);
 
     lv_label_set_text(lbl_speed, "00");
 	lv_obj_set_auto_realign(lbl_speed, true);
+#ifdef CONFIG_ESP_TFT_ILI9341
+	lv_obj_set_style_local_text_font(lbl_speed, 0, LV_STATE_DEFAULT, &large_80);
+#else
 	lv_obj_set_style_local_text_font(lbl_speed, 0, LV_STATE_DEFAULT, &lv_font_montserrat_48);
-
+#endif
     lv_obj_align(lbl_speed, NULL, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_t* lbl_kmh = lv_label_create(screen, NULL);
@@ -398,8 +402,8 @@ void display_setup() {
 
     linemeter = lv_linemeter_create(screen, NULL);
     lv_linemeter_set_range(linemeter, 0, 50);
-    lv_obj_set_height(linemeter, 120);
-    lv_obj_set_width(linemeter, 120);
+    lv_obj_set_height(linemeter, LV_HOR_RES_MAX*0.5f);
+    lv_obj_set_width(linemeter, LV_HOR_RES_MAX*0.5f);
     lv_obj_align(linemeter, lbl_speed, LV_ALIGN_CENTER, 0, 0);
 
 	lv_obj_set_click(linemeter, true);
@@ -462,7 +466,11 @@ void display_setup() {
 //    lv_label_set_recolor(lbl_bat, 1);
 
     lbl_mah = lv_label_create(screen, NULL);
+#ifdef CONFIG_ESP_TFT_ILI9341
+	lv_obj_set_style_local_text_font(lbl_mah, 0, LV_STATE_DEFAULT, &iosevka_20);
+#else
 	lv_obj_set_style_local_text_font(lbl_mah, 0, LV_STATE_DEFAULT, &iosevka_14);
+#endif
     lv_label_set_text_fmt(lbl_mah, "mAh\nDSG%05d\nCHG%05d", 0, 0);
     lv_label_set_align(lbl_mah, LV_LABEL_ALIGN_RIGHT);
 
@@ -471,12 +479,17 @@ void display_setup() {
     lv_obj_t* cont = lv_cont_create(screen, NULL);
     lv_obj_set_style_local_pad_all(cont, 0, LV_STATE_DEFAULT, 4);
 
-    lv_obj_set_width(cont, 60);
     //lv_obj_set_style(cont, &cont_style);
 
     lbl_pow = lv_label_create(cont, NULL);
     lv_label_set_text(lbl_pow, "0W");
+#ifdef CONFIG_ESP_TFT_ILI9341
+    lv_obj_set_width(cont, LV_HOR_RES_MAX*0.27);
 	lv_obj_set_style_local_text_font(lbl_pow, 0, LV_STATE_DEFAULT, &iosevka_20);
+#else
+    lv_obj_set_width(cont, LV_HOR_RES_MAX*0.27);
+	lv_obj_set_style_local_text_font(lbl_pow, 0, LV_STATE_DEFAULT, &iosevka_20);
+#endif
 	lv_obj_set_style_local_pad_all(lbl_pow, 0, LV_STATE_DEFAULT, 4);
     lv_obj_align(lbl_pow, 0, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_auto_realign(lbl_pow, 1);
@@ -490,7 +503,7 @@ void display_setup() {
     lv_label_set_text(lbl_mot_curr, "0A");
 	lv_obj_set_style_local_text_font(lbl_mot_curr, 0, LV_STATE_DEFAULT, &iosevka_20);
     lv_obj_set_auto_realign(lbl_mot_curr, 1);
-    lv_obj_set_width(cont, 60);
+    lv_obj_set_width(cont, LV_HOR_RES_MAX*0.27);
     lv_obj_align(lbl_mot_curr, 0, LV_ALIGN_CENTER, 0, 0);
 
     lv_obj_align(cont, 0, LV_ALIGN_IN_RIGHT_MID, -2, 0);
@@ -499,8 +512,11 @@ void display_setup() {
     lv_obj_t* statusbar = lv_cont_create(screen, NULL);
 	lv_obj_set_style_local_bg_opa(statusbar, 0, LV_STATE_DEFAULT, 0);
 	lv_obj_set_style_local_pad_all(statusbar, 0, LV_STATE_DEFAULT, 1);
+#ifdef CONFIG_ESP_TFT_ILI9341
+	lv_obj_set_style_local_text_font(statusbar, 0, LV_STATE_DEFAULT, &lv_font_montserrat_22);
+#else
 	lv_obj_set_style_local_text_font(statusbar, 0, LV_STATE_DEFAULT, &lv_font_montserrat_16);
-
+#endif
     lbl_wifisymbol = lv_label_create(statusbar, NULL);
     lv_label_set_text(lbl_wifisymbol, LV_SYMBOL_WIFI);
 	lv_obj_set_style_local_opa_scale(lbl_wifisymbol, 0, LV_STATE_DEFAULT, 64);
@@ -524,8 +540,8 @@ void display_setup() {
     /* duty gauge */
     duty_gauge = lv_gauge_create(screen, NULL);
     lv_gauge_set_range(duty_gauge, 0, 100);
-    lv_obj_set_width(duty_gauge, 70);
-    lv_obj_set_height(duty_gauge, 70);
+    lv_obj_set_width(duty_gauge, LV_HOR_RES_MAX*0.32);
+    lv_obj_set_height(duty_gauge, LV_HOR_RES_MAX*0.32);
     lv_gauge_set_scale(duty_gauge, 180, 10, 0);
     lv_gauge_set_value(duty_gauge, 0, 0);
     lv_obj_align(duty_gauge, 0, LV_ALIGN_IN_LEFT_MID, 2, -34);
@@ -540,16 +556,22 @@ void display_setup() {
 
 	power_label = lv_label_create(screen, 0);
 	lv_label_set_recolor(power_label, true);
+#ifdef CONFIG_ESP_TFT_ILI9341
+	lv_obj_set_style_local_text_font(power_label, 0, LV_STATE_DEFAULT, &lv_font_montserrat_14);
+
+#else
 	lv_obj_set_style_local_text_font(power_label, 0, LV_STATE_DEFAULT, &lv_font_montserrat_12);
+
+#endif
 	display_set_power_level(g_set_power_level);
 	lv_obj_set_auto_realign(power_label, 1);
-	if(lv_disp_get_ver_res(disp) > 200) {
-		lv_obj_align(power_label, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -10);
-		//lv_obj_set_style(power_label, &font_28_style);
+	// if(lv_disp_get_ver_res(disp) > 200) {
+	// 	lv_obj_align(power_label, NULL, LV_ALIGN_IN_BOTTOM_MID, 0, -10);
+	// 	//lv_obj_set_style(power_label, &font_28_style);
 
-	} else {
+	// } else {
 		lv_obj_align(power_label, linemeter, LV_ALIGN_IN_TOP_MID, 0, -4);
-	}
+	// }
 
 	lv_obj_set_event_cb(power_label, [](struct _lv_obj_t * obj, lv_event_t event) {
 		ESP_LOGI(__func__, "%d", event);
