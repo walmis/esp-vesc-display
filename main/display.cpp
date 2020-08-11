@@ -71,6 +71,14 @@ int8_t g_set_power_level = 3;
 static bool displ_message_updated;
 static std::string displ_message_curr;
 
+enum {
+	DISPL_TRIP,
+	DISPL_TRIPTIME,
+	DISPL_AVS,
+	DISPL_FET,
+	DISPL_LAST
+};
+
 static uint8_t g_cur_display = DISPL_TRIP;
 
 static float g_triptime;
@@ -682,14 +690,6 @@ void display_setup() {
 }
 
 extern "C" {
-
-enum {
-	DISPL_TRIP,
-	DISPL_TRIPTIME,
-	DISPL_AVS,
-	DISPL_FET,
-	DISPL_LAST
-};
 
 extern uint32_t platform_time_ms();
 
