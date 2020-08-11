@@ -71,6 +71,19 @@ int8_t g_set_power_level = 3;
 static bool displ_message_updated;
 static std::string displ_message_curr;
 
+static uint8_t g_cur_display = DISPL_TRIP;
+
+static float g_triptime;
+static float g_avgspeed;
+static float g_trip;
+static float g_mos_temp;
+
+static float bat_cut_start;
+static float bat_cut_end;
+int ctr;
+
+static uint32_t g_tm_prev_change;
+
 #define DOUBLE_BUFFER
 
 #ifdef DOUBLE_BUFFER
@@ -680,18 +693,7 @@ enum {
 
 extern uint32_t platform_time_ms();
 
-static uint8_t g_cur_display = DISPL_TRIP;
 
-static float g_triptime;
-static float g_avgspeed;
-static float g_trip;
-static float g_mos_temp;
-
-static float bat_cut_start;
-static float bat_cut_end;
-int ctr;
-
-static uint32_t g_tm_prev_change;
 
 void update_data(lv_task_t* task) {
 	g_cur_display++;
