@@ -1,7 +1,11 @@
 #pragma once
 #include <stdint.h>
 
-void spi_init();
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void spidrv_init();
 
 void spi_beginTransaction(uint8_t cspin);
 void spi_endTransaction();
@@ -20,3 +24,7 @@ void spi_addbuffer8(uint8_t d);
 void spi_send_aligned(void* buffer, int size);
 
 void spi_xfer(uint8_t* in, uint8_t* out, uint8_t len);
+
+#ifdef __cplusplus
+}
+#endif

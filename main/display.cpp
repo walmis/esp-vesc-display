@@ -61,6 +61,8 @@ static lv_obj_t *power_label;
 static void(*cruise_control_func)(uint8_t long_press);
 static void(*power_lvl_changed_fn)(int8_t level);
 
+static bool night_mode = 0;
+
 static lv_obj_t* brake_icon ;
 static lv_obj_t* cruise_control_icon;
 
@@ -237,7 +239,7 @@ void display_setup() {
 #ifdef DOUBLE_BUFFER
 	flush_q = xQueueCreate(2, sizeof(struct flush_data));
 #endif
-	spi_init();
+	spidrv_init();
 
 #ifdef CONFIG_LCD_TOUCH
 	touch.begin(240,320);
@@ -546,6 +548,11 @@ void display_setup() {
     lv_gauge_set_value(duty_gauge, 0, 0);
     lv_obj_align(duty_gauge, 0, LV_ALIGN_IN_LEFT_MID, 2, -34);
     /* ********** */
+	auto duty_lbl = lv_label_create(screen, NULL);
+	lv_label_set_text(duty_lbl, "Duty%");
+	lv_obj_set_style_local_text_font(duty_lbl, 0, LV_STATE_DEFAULT, &lv_font_unscii_8);
+	lv_obj_align(duty_lbl, duty_gauge, LV_ALIGN_CENTER, 0, 14);
+
 
 	lbl_message = lv_label_create(screen, NULL);
 	lv_label_set_recolor(lbl_message, true);
@@ -570,7 +577,7 @@ void display_setup() {
 	// 	//lv_obj_set_style(power_label, &font_28_style);
 
 	// } else {
-		lv_obj_align(power_label, linemeter, LV_ALIGN_IN_TOP_MID, 0, -4);
+		lv_obj_align(power_label, linemeter, LV_ALIGN_OUT_TOP_MID, 0, 0);
 	// }
 
 	lv_obj_set_event_cb(power_label, [](struct _lv_obj_t * obj, lv_event_t event) {
@@ -822,6 +829,29 @@ void display_show_menu() {
 			}
 		});
 		lv_list_add_btn(list, 0, "Motor Current");
+
+		obj = lv_list_add_btn(list, 0, "Night mode");
+		lv_btn_set_checkable(obj, true);
+		if(night_mode) {
+			lv_btn_set_state(obj, LV_BTN_STATE_CHECKED_RELEASED);
+		}
+		lv_obj_set_event_cb(obj, [](lv_obj_t* obj, lv_event_t event) {
+			ESP_LOGI("night", "ev %d state %d", event, lv_btn_get_state(obj));
+			if(event == LV_EVENT_VALUE_CHANGED) {
+				if(lv_btn_get_state(obj)) {
+					night_mode = true;
+					LV_THEME_DEFAULT_INIT(lv_theme_get_color_primary(), lv_theme_get_color_secondary(),
+						LV_THEME_MATERIAL_FLAG_DARK,
+						lv_theme_get_font_small(), lv_theme_get_font_normal(), lv_theme_get_font_subtitle(), lv_theme_get_font_title());
+				} else {
+					night_mode = false;
+					LV_THEME_DEFAULT_INIT(lv_theme_get_color_primary(), lv_theme_get_color_secondary(),
+						LV_THEME_MATERIAL_FLAG_LIGHT,
+						lv_theme_get_font_small(), lv_theme_get_font_normal(), lv_theme_get_font_subtitle(), lv_theme_get_font_title());	
+				}
+			}
+		});
+
 		obj = lv_list_add_btn(list, 0, "Close");
 		lv_obj_set_event_cb(obj, [](lv_obj_t* obj, lv_event_t event) {
 			if(event == LV_EVENT_CLICKED) {
@@ -831,6 +861,8 @@ void display_show_menu() {
 				list = NULL;
 			}
 		});
+
+
 
 		lv_group_focus_freeze(ctrl_group, false);
 

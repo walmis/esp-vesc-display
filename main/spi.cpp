@@ -117,7 +117,7 @@ void spi_flushdata() {
 	}
 }
 
-void spi_init() {
+void spidrv_init() {
     if(!_spi_lock) {
         _spi_lock = xSemaphoreCreateMutex();
     }

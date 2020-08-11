@@ -86,6 +86,44 @@ extern uint32_t uart_queue_full_cnt;
 extern uint32_t uart_rx_count;
 extern uint32_t uart_tx_count;
 
+#include "spi.h"
+
+CgiStatus cgi_lcdreg(HttpdConnData *connData) {
+  if (connData->isConnectionClosed) {
+    //Connection aborted. Clean up.
+    return HTTPD_CGI_DONE;
+  }
+  char buff[128];
+  int reg = 0, val = 0, len;
+
+  len=httpdFindArg(connData->getArgs, "reg", buff, sizeof(buff));
+  if (len>0) {
+    reg = strtol(buff, 0, 0);
+  }
+
+  len=httpdFindArg(connData->getArgs, "val", buff, sizeof(buff));
+  if (len>0) {
+    val = strtol(buff, 0, 0);
+  }
+
+  len = snprintf(buff, sizeof(buff), "set reg 0x%x = 0x%x", reg, val);
+
+  httpdStartResponse(connData, 200);
+  httpdHeader(connData, "Cache-Control", "no-store, must-revalidate, no-cache, max-age=0");
+  httpdHeader(connData, "Content-Type", "text/plain");
+  httpdEndHeaders(connData);
+
+  httpdSend(connData, buff, len);
+
+  spi_beginTransaction(CONFIG_GPIO_TFT_CS);
+  spi_writeCommand16(reg);
+  spi_writeData16(val);
+
+  spi_endTransaction();
+    return HTTPD_CGI_DONE;
+
+}
+
 CgiStatus cgi_status(HttpdConnData *connData) {
   int len;
   char buff[256];
@@ -178,6 +216,7 @@ HttpdBuiltInUrl builtInUrls[]={
 //  {"/wifi/connstatus.cgi", cgiWiFiConnStatus, NULL},
   {"/uart/baud", cgi_baud, NULL, 0},
   {"/status", cgi_status, NULL, 0},
+  {"/lcdreg", cgi_lcdreg, NULL, 0},
 //
   {"/terminal", cgiWebsocket, (const void*)on_term_connect, 0},
   {"/debugws", cgiWebsocket, (const void*)on_debug_connect, 0},

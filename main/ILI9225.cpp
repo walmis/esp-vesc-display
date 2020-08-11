@@ -292,8 +292,8 @@ void ILI9225_init() {
 	_writeRegister(ILI9225_GAMMA_CTRL6, 0x0808);
 	_writeRegister(ILI9225_GAMMA_CTRL7, 0x0000);
 	_writeRegister(ILI9225_GAMMA_CTRL8, 0x0A00);
-	_writeRegister(ILI9225_GAMMA_CTRL9, 0x0710);
-	_writeRegister(ILI9225_GAMMA_CTRL10, 0x0710);
+	_writeRegister(ILI9225_GAMMA_CTRL9,  0x1000);
+	_writeRegister(ILI9225_GAMMA_CTRL10, 0x001f);
 
 	_writeRegister(ILI9225_DISP_CTRL1, 0x0012);
     spi_endTransaction();
