@@ -82,6 +82,10 @@ static uint16_t g_throttle_cal_max;
 static uint8_t g_brake_controls_disabled;
 static int g_vesc_sock;
 
+static float g_batt_brake_limit_voltage_start = 52;
+static float g_batt_brake_limit_voltage_end = 54.6;
+
+
 struct mc_data mc_data;
 static mc_configuration mcconf;
 static bool have_mcconf;
@@ -505,7 +509,10 @@ void update_motor_control() {
 				motor_set_current_rel(0);
 			} else {
 				if(g_braking && !g_brake_controls_disabled) {
-					utils_step_towards(&brake_ramp, 1.0, (float)dt / BRAKE_RAMP_UP_MS);
+					float target = utils_map(mc_data.v_in, g_batt_brake_limit_voltage_start, g_batt_brake_limit_voltage_end,
+						1.0f, 0.0f);
+					target = clip(target, 0.0f, 1.0f);
+					utils_step_towards(&brake_ramp, target, (float)dt / BRAKE_RAMP_UP_MS);
 					motor_set_current_brake_rel(brake_ramp);
 				} else {
 					// if brake signal released, release brake immediately
@@ -594,6 +601,9 @@ static void vesc_process_packet_cb(unsigned char *data, unsigned int len) {
 			if(mcconf.si_battery_type == BATTERY_TYPE_LIION_3_0__4_2) {
 				g_max_watts = 4.2f * mcconf.si_battery_cells * mcconf.l_in_current_max;
 				ESP_LOGI(__func__, "Detected max power %d W", (int)g_max_watts);
+
+				g_batt_brake_limit_voltage_start = 4.2f * mcconf.si_battery_cells * 0.95; // 5%
+				g_batt_brake_limit_voltage_end = 4.2f * mcconf.si_battery_cells;
 			}
 
 			tach_to_km = (((1.0f * mcconf.si_gear_ratio) / (mcconf.si_motor_poles * 3.0f)) * (mcconf.si_wheel_diameter * M_PI)) / 1000.0f;

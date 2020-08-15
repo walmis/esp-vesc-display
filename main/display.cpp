@@ -812,7 +812,7 @@ void display_show_menu() {
 					sprintf(msg, "Curr: %d\nMin: %d Max: %d", adc, state->thr_min, state->thr_max);
 					lv_msgbox_set_text(state->msgbox, msg);
 
-				}, 70, LV_TASK_PRIO_LOW, msgbox1);
+				}, 100, LV_TASK_PRIO_HIGH, msgbox1);
 
 				State* state = new State;
 				state->msgbox = msgbox1;
