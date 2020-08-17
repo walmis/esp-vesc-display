@@ -465,7 +465,7 @@ void motor_set_current(float current) {
 		uint8_t buffer[5];
 		buffer[0] = COMM_SET_CURRENT;
 		int32_t index = 1;
-		buffer_append_float32(buffer, current, 1e5, &index);
+		buffer_append_int32(buffer, current*1000.0f, &index);
 		packet_send_packet(buffer, index, PKT_VESC);
 	}
 }
