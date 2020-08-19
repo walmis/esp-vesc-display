@@ -530,7 +530,7 @@ void update_motor_control() {
 						thrval = clip(thrval, 0.0f, 1.0f);
 
 						static float Imot_filt;
-						float Imot_alpha = (float)dt / (dt + 50); //ms
+						float Imot_alpha = (float)dt / (dt + 20); //ms
 
 						if(thrval > 0.05f) {
 							//if motor current > batt current
