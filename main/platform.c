@@ -435,7 +435,7 @@ esp_err_t store_odometer(double val) {
 
 
 #define BRAKE_RAMP_UP_MS 200
-#define THROTTLE_RAMP_TIME_MS 200
+#define THROTTLE_RAMP_TIME_MS 500
 
 uint8_t motor_disarm() {
 	uint8_t tmp = g_motor_armed;
@@ -529,12 +529,34 @@ void update_motor_control() {
 						float thrval = utils_map(adc, g_throttle_cal_min, g_throttle_cal_max, 0.0f, 1.0f);
 						thrval = clip(thrval, 0.0f, 1.0f);
 
-						utils_step_towards(&throttle_ramp, thrval, (float)dt / THROTTLE_RAMP_TIME_MS);
+						static float Imot_filt;
+						float Imot_alpha = (float)dt / (dt + 50); //ms
 
-						if(thrval > 0.02f) {
-							motor_set_current_rel(throttle_ramp);
+						if(thrval > 0.05f) {
+							//if motor current > batt current
+							utils_step_towards(&throttle_ramp, thrval, (float)dt / THROTTLE_RAMP_TIME_MS);
+
+							float Ibatt_max = (mcconf.l_watt_max*1.15f / mc_data.v_in) * thrval;
+
+							if( mcconf.l_current_max > Ibatt_max) {
+
+								float Imot = clip(Ibatt_max / clip(mc_data.duty_now, 0.1, 1), 0, mcconf.l_current_max);
+								UTILS_LP_FAST(Imot_filt, Imot, Imot_alpha);
+
+								//char buf[128];
+								//sprintf(buf, "Im %.2f %.2fw", Imot_filt, mcconf.l_watt_max);
+								//display_show_message(buf);
+
+								//float set_curr = utils_map(mc_data.duty_now, 0.0, 1, mcconf.lo_current_max, Ibatt_max);
+								//set_curr = clip(set_curr, Ibatt_max, mcconf.lo_current_max);
+
+								motor_set_current(Imot_filt);
+							} else {
+								motor_set_current_rel(throttle_ramp);
+							}
 						} else {
-							motor_set_current_rel(0);
+							UTILS_LP_FAST(Imot_filt, 0, Imot_alpha);
+							motor_set_current(Imot_filt);
 						}
 					}
 				}

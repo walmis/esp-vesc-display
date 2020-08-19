@@ -66,7 +66,7 @@ static bool night_mode = 0;
 static lv_obj_t* brake_icon ;
 static lv_obj_t* cruise_control_icon;
 
-int8_t g_set_power_level = 3;
+int8_t g_set_power_level = 0;
 
 static bool displ_message_updated;
 static std::string displ_message_curr;
@@ -728,8 +728,8 @@ void update_label_task(lv_task_t* task) {
 void display_run() {
 	TickType_t prevTick = 0;
 	
-	lv_task_create(update_data, 2500, LV_TASK_PRIO_LOW, 0);
-	lv_task_create(update_label_task, 100, LV_TASK_PRIO_LOW, 0);
+	lv_task_create(update_data, 2500, LV_TASK_PRIO_MID, 0);
+	lv_task_create(update_label_task, 100, LV_TASK_PRIO_MID, 0);
 
     while(1) {
     	uint32_t time_till_next_ms = lv_task_handler();
