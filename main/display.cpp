@@ -92,7 +92,7 @@ int ctr;
 
 static uint32_t g_tm_prev_change;
 
-#define DOUBLE_BUFFER
+//#define DOUBLE_BUFFER
 
 #ifdef DOUBLE_BUFFER
 struct flush_data {

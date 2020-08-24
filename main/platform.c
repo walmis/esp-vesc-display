@@ -150,12 +150,18 @@ void dbg_task(void *parameters) {
 #define PKT_UDP 1
 #define PKT_TCP 2
 
+
+uint32_t last_net_alive_pkt;
+
 //whole packet received from tcp/udp, forward to vesc (handler 0)
 void _net_pkt_handler(unsigned char *data, unsigned int len) {
+	if(data[0] == COMM_ALIVE) {
+		last_net_alive_pkt = platform_time_ms();
+	}
 	packet_send_packet(data, len, PKT_VESC);
 }
 
-void _net_pkt_tcp_snd_handler(unsigned char *data, unsigned int len) {\
+void _net_pkt_tcp_snd_handler(unsigned char *data, unsigned int len) {
 	if(g_tcp_client_sock != 0) {
 		send(g_tcp_client_sock, data, len, MSG_DONTWAIT);
 	}
@@ -230,7 +236,7 @@ void net_proxy_task(void* params) {
 
 				}
 			}
-			uint8_t buf[128];
+			static uint8_t buf[512];
 
 			if(FD_ISSET(g_udp_serv_sock, &fds)) {
 				socklen_t slen = sizeof(g_udp_peer_addr);
@@ -485,6 +491,11 @@ void update_motor_control() {
 	static float throttle_ramp;
 	static uint32_t last_update;
 	uint32_t dt;
+
+	//do not run motor control if vesc tool is sending alive packets
+	if(platform_time_ms() - last_net_alive_pkt < 1000) {
+		return;
+	}
 
 	if(have_mcconf) {
 		uint16_t adc = get_throttle_adc();
@@ -937,8 +948,11 @@ void vesc_uart_task(void* param) {
 			vTaskDelayMs(100);
 			vesc_poll_data();
 		} else {
-			uint8_t req = COMM_GET_VALUES;
-			packet_send_packet(&req, 1, PKT_VESC);
+			if(platform_time_ms() - last_net_alive_pkt > 1000) {
+				uint8_t req = COMM_GET_VALUES;
+				packet_send_packet(&req, 1, PKT_VESC);
+			}
+
 		}
 	}
 }
@@ -1069,7 +1083,6 @@ void on_power_limit_request(int8_t plimit) {
 	}
 }
 
-
 void app_main(void) {
 #if CONFIG_GPIO_TFT_LED >= 0
 	gpio_set_direction(CONFIG_GPIO_TFT_LED, GPIO_MODE_OUTPUT);
@@ -1154,12 +1167,13 @@ void app_main(void) {
 
 		display_show_message("Throttle not calibrated");
 	}
+	
 
 	display_set_cruise_control_cb(on_cruise_control_request);
 	display_set_power_level_cb(on_power_limit_request);
 
 #ifdef CONFIG_ESP_VESC_UART
-	xTaskCreate(&vesc_uart_task, "vesc_uart", 1500, NULL, 3, NULL);
+	xTaskCreate(&vesc_uart_task, "vesc_uart", 2048, NULL, 4, NULL);
 #else
 	xTaskCreate(&vesc_net_task, "vesc_net", 1500, NULL, 3, NULL);
 #endif
