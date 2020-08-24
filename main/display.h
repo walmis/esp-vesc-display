@@ -22,6 +22,7 @@ void display_set_connected(bool connected);
 
 // this function is thread safe
 void display_show_message(const char* message);
+void display_show_message_timed(const char* message, int timeout_ms);
 
 void display_set_power_level(int8_t power_level);
 

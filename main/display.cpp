@@ -949,6 +949,26 @@ void display_set_odo(float dist) {
 
 }
 
+void display_show_message_timed(const char* message, int timeout) {
+	if(strcmp(displ_message_curr.c_str(), message) != 0) {
+		displ_message_curr = message;
+		displ_message_updated = true;
+
+		lv_task_t* task = lv_task_create([](lv_task_t* task) {
+			displ_message_curr = "";
+			displ_message_updated = true;
+			lv_task_del(task);
+		}, timeout, LV_TASK_PRIO_MID, 0);
+		
+	}
+	// if(!message) {
+	// 	lv_label_set_text(lbl_message, "");
+	// } else {
+	// 	lv_label_set_text_fmt(lbl_message, "#ff0000 %s#", message);
+	// }
+}
+
+
 void display_show_message(const char* message) {
 	if(strcmp(displ_message_curr.c_str(), message) != 0) {
 		displ_message_curr = message;
