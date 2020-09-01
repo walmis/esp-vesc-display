@@ -717,10 +717,11 @@ void update_data(lv_task_t* task) {
 	case DISPL_FET:
 		lv_label_set_static_text(lbl_trip, "FET");
 		lv_label_set_text_fmt(lbl_trip_val, "%.1f", g_mos_temp);
-
+        break;
 	case DISPL_WHKM:
 		lv_label_set_static_text(lbl_trip, "Wh/Km");
 		lv_label_set_text_fmt(lbl_trip_val, "%.1f", g_wh_km);
+		break;
 	}
 }
 
