@@ -76,6 +76,7 @@ enum {
 	DISPL_TRIPTIME,
 	DISPL_AVS,
 	DISPL_FET,
+	DISPL_WHKM,
 	DISPL_LAST
 };
 
@@ -85,6 +86,7 @@ static float g_triptime;
 static float g_avgspeed;
 static float g_trip;
 static float g_mos_temp;
+static float g_wh_km;
 
 static float bat_cut_start;
 static float bat_cut_end;
@@ -715,6 +717,10 @@ void update_data(lv_task_t* task) {
 	case DISPL_FET:
 		lv_label_set_static_text(lbl_trip, "FET");
 		lv_label_set_text_fmt(lbl_trip_val, "%.1f", g_mos_temp);
+
+	case DISPL_WHKM:
+		lv_label_set_static_text(lbl_trip, "Wh/Km");
+		lv_label_set_text_fmt(lbl_trip_val, "%.1f", g_wh_km);
 	}
 }
 
@@ -898,6 +904,10 @@ void display_set_power_level(int8_t power_level) {
 
 	if(power_lvl_changed_fn)
 		power_lvl_changed_fn(g_set_power_level);
+}
+
+void display_set_wh_km(float wh_km) {
+	g_wh_km = wh_km;
 }
 
 void display_set_mot_current_minmax(float min, float max) {

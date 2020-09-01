@@ -18,6 +18,7 @@ void display_set_bat_limits(float cut_start, float cut_end);
 void display_set_avgspeed(float avgspeed);
 void display_set_triptime(int trptime_ms);
 void display_set_fet_temp(float temp);
+void display_set_wh_km(float wh_km);
 void display_set_connected(bool connected);
 
 // this function is thread safe

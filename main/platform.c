@@ -853,6 +853,9 @@ void _display_update_mcdata() {
 
 	if(platform_time_ms() - t_odo_save > 5000 && fabsf(read_odometer()-stored_odo) > 0.05f) {
 		ESP_LOGI(__func__, "Store odo value %f", stored_odo);
+		if(trip_km > 0.01f) {
+			display_set_wh_km( (mc_data.watt_hours - mc_data.watt_hours_charged) / trip_km);
+		}
 
 		esp_err_t ret = store_odometer(stored_odo);
 		if(ret != ESP_OK) {
