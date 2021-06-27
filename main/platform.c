@@ -140,6 +140,7 @@ void dbg_task(void *parameters) {
 	dbg_queue = xQueueCreate(1024, 1);
 
 	uint8_t b;
+	sleep(10);
 	while(1) {
 		xQueueReceive(dbg_queue, &b, portMAX_DELAY);
 		http_debug_putc(b, b=='\n' ? 1 : 0);
@@ -312,7 +313,11 @@ bool vesc_update_power_level() {
 
 void debug_putc(char c, int flush) {
 	if(dbg_queue) {
-		xQueueSend(dbg_queue, &c, 0);
+		if(xQueueSend(dbg_queue, &c, 0) != pdPASS) {
+    		char b;
+		    xQueueReceive(dbg_queue, &b, 0);
+		    xQueueSend(dbg_queue, &c, 0);
+		}
 	}
 }
 
@@ -936,7 +941,7 @@ void vesc_poll_data() {
 #ifdef CONFIG_ESP_VESC_UART
 void vesc_uart_task(void* param) {
 	uint8_t buffer[128];
-	unsigned long prevWake = 0;
+	TickType_t prevWake = 0;
 	while(1) {
 		int res;
 		while((res = uart_read_bytes(0, buffer, sizeof(buffer), 1 /* tick */)) > 0) {
@@ -1184,7 +1189,7 @@ void app_main(void) {
 	xTaskCreate(&net_proxy_task, "net_proxy_task", 1500, NULL, 3, NULL);
 
 	extern void netcat_ota_task(void* port);
-	xTaskCreate(&netcat_ota_task, "netcat-ota", 1500, (void*)120, 2, NULL);
+	//xTaskCreate(&netcat_ota_task, "netcat-ota", 1500, (void*)120, 2, NULL);
 
 	ESP_LOGI(__func__, "Free heap %d\n", esp_get_free_heap_size());
 	ESP_LOGI(__func__, "vdd33 %d", esp_wifi_get_vdd33());

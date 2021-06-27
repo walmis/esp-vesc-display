@@ -236,6 +236,7 @@ void spi_send_aligned(void* buffer, int size) {
 	if(user_buffer.ptr) {
 		ESP_LOGE(__func__, "spi transfer failed");
 	}
+	user_buffer.ptr = 0;
     spi_task_notify_handle = 0;
 }
 

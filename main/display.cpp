@@ -700,33 +700,39 @@ extern uint32_t platform_time_ms();
 void update_data(lv_task_t* task) {
 	g_cur_display++;
 	if(g_cur_display == DISPL_LAST) g_cur_display = 0;
+	char text[16] = {};
 
 	switch(g_cur_display) {
 	case DISPL_TRIP:
 		lv_label_set_static_text(lbl_trip, "TRP");
-		lv_label_set_text_fmt(lbl_trip_val, "%.2f", g_trip);
+		snprintf(text, sizeof(text), "%.2f", g_trip);
 		break;
 	case DISPL_TRIPTIME:
 		lv_label_set_static_text(lbl_trip, "TIM");
-		lv_label_set_text_fmt(lbl_trip_val, "%02d:%02d", (int)g_triptime/60, (int)g_triptime%60);
+		snprintf(text, sizeof(text), "%02d:%02d", (int)g_triptime/60, (int)g_triptime%60);
 		break;
 	case DISPL_AVS:
 		lv_label_set_static_text(lbl_trip, "AVS");
-		lv_label_set_text_fmt(lbl_trip_val, "%02.1f", g_avgspeed);
+		snprintf(text, sizeof(text), "%02.1f", g_avgspeed);
 		break;
 	case DISPL_FET:
 		lv_label_set_static_text(lbl_trip, "FET");
-		lv_label_set_text_fmt(lbl_trip_val, "%.1f", g_mos_temp);
-
+		snprintf(text, sizeof(text), "%.1f", g_mos_temp);
+        break;
 	case DISPL_WHKM:
 		lv_label_set_static_text(lbl_trip, "Wh/Km");
-		lv_label_set_text_fmt(lbl_trip_val, "%.1f", g_wh_km);
+		snprintf(text, sizeof(text), "%.1f", g_wh_km);
+		break;
 	}
+	
+	lv_label_set_text(lbl_trip_val, text);
 }
 
 void update_label_task(lv_task_t* task) {
 	if(displ_message_updated) {
-		lv_label_set_text(lbl_message, displ_message_curr.c_str());
+	    if(!displ_message_curr.empty()) {
+		    lv_label_set_text(lbl_message, displ_message_curr.c_str());
+		}
 		displ_message_updated = false;
 	}
 }
