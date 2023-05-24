@@ -13,7 +13,7 @@ uint16_t get_throttle_adc();
 uint8_t motor_disarm(); //returns armed state
 void motor_arm();
 
-inline void utils_step_towards(float *value, float goal, float step) {
+static inline void utils_step_towards(float *value, float goal, float step) {
     if (*value < goal) {
         if ((*value + step) < goal) {
             *value += step;
