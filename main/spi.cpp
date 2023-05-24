@@ -23,10 +23,18 @@ struct {
     void* ptr;
     int size;
     int pos;
+    bool error;
 } user_buffer;
 
 static int8_t _cs_pin = -1;
 static xSemaphoreHandle _spi_lock;
+
+void spi_lock() {
+    xSemaphoreTake(_spi_lock, portMAX_DELAY );
+}
+void spi_unlock() {
+    xSemaphoreGive(_spi_lock);
+}
 
 IRAM_ATTR
 void spi_addbuffer16(uint16_t d) {
@@ -65,7 +73,9 @@ void spi_sendbuffer() {
 	spi_trans_t trans = {};
 	trans.mosi = spi_buffer;
 	trans.bits.mosi = 8 * spi_bufpos;
-	spi_trans(HSPI_HOST, &trans);
+	if(spi_trans(HSPI_HOST, &trans) != ESP_OK) {
+		ESP_LOGE(__func__, "spi_trans failed");
+	}
 	spi_bufpos = 0;
 
 	if(!ulTaskNotifyTake( pdTRUE, 100 )) {
@@ -193,7 +203,7 @@ void spi_xfer(uint8_t* in, uint8_t* out, uint8_t len) {
 	trans.bits.miso = 8 * len;
     trans.mosi = outbuf;
 	trans.bits.mosi = 8 * len;
-	if(spi_trans(HSPI_HOST, &trans) == ESP_FAIL) {
+	if(spi_trans(HSPI_HOST, &trans) != ESP_OK) {
 			ESP_LOGE(__func__, "spi_trans failed");
 	}
 	if(!ulTaskNotifyTake( pdTRUE, 100 )) {
@@ -206,7 +216,7 @@ void spi_xfer(uint8_t* in, uint8_t* out, uint8_t len) {
 
 }
 
-void spi_send_aligned(void* buffer, int size) {
+void IRAM_ATTR spi_send_aligned(void* buffer, int size) {
     if(user_buffer.ptr != 0) {
         ESP_LOGE(__func__, "buffer not cleared");
     }
@@ -222,16 +232,28 @@ void spi_send_aligned(void* buffer, int size) {
     user_buffer.pos += to_send;
     user_buffer.size -= to_send;
 	trans.bits.mosi = 8 * to_send;
-	if(spi_trans(HSPI_HOST, &trans) == ESP_FAIL) {
+	if(spi_trans(HSPI_HOST, &trans) != ESP_OK) {
 			ESP_LOGE(__func__, "spi_trans failed");
 	}
-    
+ //again:
 	if(!ulTaskNotifyTake( pdTRUE, 100 )) {
 		ESP_LOGE(__func__, "SPI xfer timeout");
 	}
 	if(user_buffer.ptr) {
-		ESP_LOGE(__func__, "spi transfer failed");
+		ESP_LOGE(__func__, "spi transfer failed buffer:%p len:%d, err:%d try again", (uint8_t*)user_buffer.ptr + user_buffer.pos, user_buffer.size, user_buffer.error);
+        /*spi_trans_t trans = {};
+        trans.mosi = (uint32_t*)((uint8_t*)user_buffer.ptr + user_buffer.pos);
+        int to_send = std::min(user_buffer.size, 64);
+        trans.bits.mosi = 8 * to_send;
+        
+		if(spi_trans(HSPI_HOST, &trans) != ESP_OK) {
+		    ESP_LOGE(__func__, "spi_trans failed restart");
+        } else {
+            goto again;
+        }*/
+
 	}
+	user_buffer= {};
     spi_task_notify_handle = 0;
 }
 
@@ -266,6 +288,7 @@ static IRAM_ATTR void spi_event_callback(int event, void *arg)
                     
 					if(spi_trans(HSPI_HOST, &trans) != ESP_OK) {
 						//ESP_LOGE(__func__, "spi_trans failed");
+						user_buffer.error = true;
 						BaseType_t xHigherPriorityTaskWoken = 0;
 						vTaskNotifyGiveFromISR( spi_task_notify_handle, &xHigherPriorityTaskWoken);
 						spi_task_notify_handle = 0;

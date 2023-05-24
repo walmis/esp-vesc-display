@@ -254,11 +254,11 @@ void http_debug_putc(char c, int flush) {
 void httpd_start() {
   espFsInit((void*)(_binary_image_espfs_start));
 
-  static char connectionMemory[sizeof(RtosConnType) * maxConnections];
+  static RtosConnType connectionMemory[maxConnections];
   httpdFreertosInit(&instance,
                       builtInUrls,
                       80,
-                      connectionMemory, maxConnections,
+                      (void*)connectionMemory, maxConnections,
                       HTTPD_FLAG_NONE);
   httpdFreertosStart(&instance);
   //httpdInit(builtInUrls, 80);

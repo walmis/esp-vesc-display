@@ -26,6 +26,7 @@
 
 #include "FreeRTOS.h"
 #include "task.h"
+#include "spi.h"
 
 #include "dhcpserver/dhcpserver.h"
 //#include <sysparam.h>
@@ -436,7 +437,10 @@ static double read_odometer() {
 }
 
 esp_err_t store_odometer(double val) {
-	return nvs_set_blob(g_nvs_handle, "odometer", (void*)&val, sizeof(val));
+    spi_lock();
+	esp_err_t ret = nvs_set_blob(g_nvs_handle, "odometer", (void*)&val, sizeof(val));
+	spi_unlock();
+	return ret;
 }
 
 
@@ -912,6 +916,7 @@ void set_throttle_calibration(uint16_t min, uint16_t max) {
 			g_throttle_cal_min = min;
 	}
 
+    spi_lock();
 	if(abs(max-min) > 100) {
 		esp_err_t ret;
 		ret = nvs_set_u16(g_nvs_handle, "thrcal_min", min);
@@ -921,6 +926,7 @@ void set_throttle_calibration(uint16_t min, uint16_t max) {
 		nvs_set_u16(g_nvs_handle, "thrcal_max", max);
 
 	}
+	spi_unlock();
 }
 
 void vesc_poll_data() {
@@ -936,7 +942,7 @@ void vesc_poll_data() {
 #ifdef CONFIG_ESP_VESC_UART
 void vesc_uart_task(void* param) {
 	uint8_t buffer[128];
-	unsigned long prevWake = 0;
+	TickType_t prevWake = 0;
 	while(1) {
 		int res;
 		while((res = uart_read_bytes(0, buffer, sizeof(buffer), 1 /* tick */)) > 0) {
